@@ -1,0 +1,172 @@
+import '../database/database_helper.dart';
+import '../models/lecture_model.dart';
+import '../models/exam_model.dart';
+
+class SampleDataHelper {
+  static final DatabaseHelper _dbHelper = DatabaseHelper();
+
+  static Future<void> addSampleLectures(int classId) async {
+    final lectures = [
+      LectureModel(
+        classId: classId,
+        title: 'مقدمة في الرياضيات',
+        date: DateTime.now().subtract(const Duration(days: 20)),
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      ),
+      LectureModel(
+        classId: classId,
+        title: 'الأعداد الطبيعية والصحيحة',
+        date: DateTime.now().subtract(const Duration(days: 18)),
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      ),
+      LectureModel(
+        classId: classId,
+        title: 'العمليات الحسابية الأساسية',
+        date: DateTime.now().subtract(const Duration(days: 15)),
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      ),
+      LectureModel(
+        classId: classId,
+        title: 'الكسور والأعداد العشرية',
+        date: DateTime.now().subtract(const Duration(days: 12)),
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      ),
+      LectureModel(
+        classId: classId,
+        title: 'الجبر الأساسي - المتغيرات',
+        date: DateTime.now().subtract(const Duration(days: 10)),
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      ),
+      LectureModel(
+        classId: classId,
+        title: 'حل المعادلات البسيطة',
+        date: DateTime.now().subtract(const Duration(days: 8)),
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      ),
+      LectureModel(
+        classId: classId,
+        title: 'الهندسة المستوية - الأشكال',
+        date: DateTime.now().subtract(const Duration(days: 6)),
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      ),
+      LectureModel(
+        classId: classId,
+        title: 'حساب المساحات والمحيطات',
+        date: DateTime.now().subtract(const Duration(days: 4)),
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      ),
+      LectureModel(
+        classId: classId,
+        title: 'النسب والتناسب',
+        date: DateTime.now().subtract(const Duration(days: 2)),
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      ),
+      LectureModel(
+        classId: classId,
+        title: 'الإحصاء والاحتمالات',
+        date: DateTime.now(),
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      ),
+    ];
+
+    for (final lecture in lectures) {
+      await _dbHelper.insertLecture(lecture);
+    }
+  }
+
+  static Future<void> addSampleExams(int classId) async {
+    final exams = [
+      ExamModel(
+        classId: classId,
+        title: 'اختبار تشخيصي - مراجعة عامة',
+        date: DateTime.now().subtract(const Duration(days: 16)),
+        maxScore: 50.0,
+        description: 'اختبار تشخيصي لتقييم مستوى الطلاب',
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      ),
+      ExamModel(
+        classId: classId,
+        title: 'امتحان الوحدة الأولى - الأعداد',
+        date: DateTime.now().subtract(const Duration(days: 13)),
+        maxScore: 100.0,
+        description: 'امتحان شامل للوحدة الأولى في الأعداد والعمليات',
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      ),
+      ExamModel(
+        classId: classId,
+        title: 'اختبار قصير - الكسور',
+        date: DateTime.now().subtract(const Duration(days: 9)),
+        maxScore: 30.0,
+        description: 'اختبار قصير في الكسور والأعداد العشرية',
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      ),
+      ExamModel(
+        classId: classId,
+        title: 'امتحان الوحدة الثانية - الجبر',
+        date: DateTime.now().subtract(const Duration(days: 7)),
+        maxScore: 100.0,
+        description: 'امتحان شامل في الجبر والمعادلات',
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      ),
+      ExamModel(
+        classId: classId,
+        title: 'اختبار قصير - الهندسة',
+        date: DateTime.now().subtract(const Duration(days: 5)),
+        maxScore: 40.0,
+        description: 'اختبار في الأشكال الهندسية والمساحات',
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      ),
+      ExamModel(
+        classId: classId,
+        title: 'امتحان نصف الفصل',
+        date: DateTime.now().subtract(const Duration(days: 3)),
+        maxScore: 150.0,
+        description: 'امتحان نصف الفصل الدراسي - شامل',
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      ),
+      ExamModel(
+        classId: classId,
+        title: 'اختبار النسب والتناسب',
+        date: DateTime.now().subtract(const Duration(days: 1)),
+        maxScore: 35.0,
+        description: 'اختبار في النسب والتناسب والتطبيقات',
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      ),
+    ];
+
+    for (final exam in exams) {
+      await _dbHelper.insertExam(exam);
+    }
+  }
+
+  static Future<void> addSampleDataForClass(int classId) async {
+    try {
+      print('🔄 Adding sample lectures for class $classId...');
+      await addSampleLectures(classId);
+      
+      print('🔄 Adding sample exams for class $classId...');
+      await addSampleExams(classId);
+      
+      print('✅ Sample data added successfully for class $classId');
+    } catch (e) {
+      print('❌ Error adding sample data: $e');
+    }
+  }
+}

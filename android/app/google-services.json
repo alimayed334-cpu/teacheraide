@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "484250147490",
+    "project_id": "teacheraide-fe827",
+    "storage_bucket": "teacheraide-fe827.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:484250147490:android:c43ac314838aa05e0c15fb",
+        "android_client_info": {
+          "package_name": "com.teacheraide.pro"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAtksS2NJh1CgJQjHT1dLVAzIsNx7tpdUQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

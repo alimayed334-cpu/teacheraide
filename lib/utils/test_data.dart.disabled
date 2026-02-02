@@ -1,0 +1,102 @@
+import '../database/database_helper.dart';
+import '../models/class_model.dart';
+import '../models/student_model.dart';
+
+class TestData {
+  static final DatabaseHelper _db = DatabaseHelper();
+
+  /// إضافة بيانات تجريبية للاختبار
+  static Future<void> addTestData() async {
+    try {
+      print('🧪 بدء إضافة بيانات تجريبية...');
+      
+      // إضافة فصل تجريبي
+      final now = DateTime.now();
+      final testClass = ClassModel(
+        name: 'الصف الأول أ',
+        subject: 'الرياضيات',
+        year: '2024',
+        description: 'فصل تجريبي للاختبار',
+        createdAt: now,
+        updatedAt: now,
+      );
+      
+      final classId = await _db.insertClass(testClass);
+      print('✅ تم إضافة فصل تجريبي بـ ID: $classId');
+      
+      // إضافة طلاب تجريبيين
+      final students = [
+        'أحمد محمد',
+        'فاطمة علي',
+        'محمد سعيد',
+        'نورة خالد',
+        'عبدالله حسن',
+      ];
+      
+      for (var studentName in students) {
+        final student = StudentModel(
+          classId: classId,
+          name: studentName,
+          createdAt: now,
+          updatedAt: now,
+        );
+        
+        final studentId = await _db.insertStudent(student);
+        print('✅ تم إضافة طالب: $studentName بـ ID: $studentId');
+      }
+      
+      print('🎉 تم إضافة جميع البيانات التجريبية بنجاح!');
+      
+      // التحقق من البيانات
+      final allClasses = await _db.getAllClasses();
+      final allStudents = await _db.getStudentsByClass(classId);
+      
+      print('📊 عدد الفصول: ${allClasses.length}');
+      print('📊 عدد الطلاب في الفصل: ${allStudents.length}');
+      
+    } catch (e) {
+      print('❌ خطأ في إضافة البيانات التجريبية: $e');
+    }
+  }
+
+  /// حذف جميع البيانات
+  static Future<void> clearAllData() async {
+    try {
+      print('🗑️ بدء حذف جميع البيانات...');
+      
+      final allClasses = await _db.getAllClasses();
+      for (var classModel in allClasses) {
+        await _db.deleteClass(classModel.id!);
+      }
+      
+      print('✅ تم حذف جميع البيانات');
+    } catch (e) {
+      print('❌ خطأ في حذف البيانات: $e');
+    }
+  }
+
+  /// التحقق من البيانات المحفوظة
+  static Future<void> checkData() async {
+    try {
+      print('🔍 التحقق من البيانات المحفوظة...');
+      
+      final allClasses = await _db.getAllClasses();
+      print('📊 عدد الفصول: ${allClasses.length}');
+      
+      for (var classModel in allClasses) {
+        final students = await _db.getStudentsByClass(classModel.id!);
+        print('  - ${classModel.name}: ${students.length} طالب');
+        for (var student in students) {
+          print('    • ${student.name}');
+        }
+      }
+      
+      if (allClasses.isEmpty) {
+        print('⚠️ لا توجد بيانات محفوظة!');
+      }
+      
+    } catch (e) {
+      print('❌ خطأ في التحقق من البيانات: $e');
+    }
+  }
+}

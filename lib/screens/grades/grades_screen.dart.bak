@@ -1,0 +1,1713 @@
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../../providers/grade_provider.dart';
+import '../../providers/class_provider.dart';
+import '../../providers/student_provider.dart';
+import '../../theme/app_theme.dart';
+import '../../models/grade_model.dart';
+import '../../models/class_model.dart';
+import '../../models/student_model.dart';
+
+class GradesScreen extends StatefulWidget {
+  const GradesScreen({super.key});
+
+  @override
+  State<GradesScreen> createState() => _GradesScreenState();
+}
+
+class _GradesScreenState extends State<GradesScreen> {
+  ClassModel? _selectedClass;
+  String _selectedView = 'exams'; // exams, students, subjects
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('إدارة الدرجات والاختبارات'),
+        actions: [
+          PopupMenuButton<String>(
+            onSelected: (value) {
+              setState(() {
+                _selectedView = value;
+              });
+            },
+            itemBuilder: (context) => [
+              const PopupMenuItem(
+                value: 'exams',
+                child: Row(
+                  children: [
+                    Icon(Icons.quiz, size: 20),
+                    SizedBox(width: 8),
+                    Text('الاختبارات'),
+                  ],
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'students',
+                child: Row(
+                  children: [
+                    Icon(Icons.people, size: 20),
+                    SizedBox(width: 8),
+                    Text('الطلاب'),
+                  ],
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'subjects',
+                child: Row(
+                  children: [
+                    Icon(Icons.subject, size: 20),
+                    SizedBox(width: 8),
+                    Text('المواد'),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          // اختيار الفصل
+          Container(
+            padding: const EdgeInsets.all(16),
+            color: AppTheme.backgroundColor,
+            child: InkWell(
+              onTap: () => _showClassSelector(context),
+              child: Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  border: Border.all(color: AppTheme.primaryColor),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.class_, color: AppTheme.primaryColor),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        _selectedClass?.name ?? 'اختر الفصل',
+                        style: TextStyle(
+                          color: _selectedClass != null 
+                              ? AppTheme.primaryColor 
+                              : AppTheme.textSecondary,
+                        ),
+                      ),
+                    ),
+                    Icon(
+                      Icons.arrow_drop_down,
+                      color: AppTheme.primaryColor,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          
+          // المحتوى الرئيسي
+          Expanded(
+            child: _selectedClass == null
+                ? const Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          Icons.quiz,
+                          size: 64,
+                          color: AppTheme.textSecondary,
+                        ),
+                        SizedBox(height: 16),
+                        Text(
+                          'اختر الفصل لعرض الدرجات والاختبارات',
+                          style: TextStyle(
+                            fontSize: 18,
+                            color: AppTheme.textSecondary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  )
+                : _buildContentView(),
+          ),
+        ],
+      ),
+      floatingActionButton: _selectedClass != null
+          ? FloatingActionButton(
+              onPressed: () => _showAddExamDialog(context),
+              child: const Icon(Icons.add),
+            )
+          : null,
+    );
+  }
+
+  Widget _buildContentView() {
+    switch (_selectedView) {
+      case 'exams':
+        return _ExamsView(classModel: _selectedClass!);
+      case 'students':
+        return _StudentsGradesView(classModel: _selectedClass!);
+      case 'subjects':
+        return _SubjectsGradesView(classModel: _selectedClass!);
+      default:
+        return _ExamsView(classModel: _selectedClass!);
+    }
+  }
+
+  void _showClassSelector(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('اختر الفصل'),
+        content: Consumer<ClassProvider>(
+          builder: (context, classProvider, child) {
+            if (classProvider.classes.isEmpty) {
+              return const Text('لا توجد فصول متاحة');
+            }
+
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              children: classProvider.classes.map((classModel) => ListTile(
+                title: Text(classModel.name),
+                subtitle: Text(classModel.subject),
+                onTap: () {
+                  setState(() {
+                    _selectedClass = classModel;
+                  });
+                  Navigator.pop(context);
+                  _loadGrades();
+                },
+              )).toList(),
+            );
+          },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('إلغاء'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _loadGrades() {
+    if (_selectedClass != null) {
+      Provider.of<GradeProvider>(context, listen: false)
+          .loadGradesByClass(_selectedClass!.id!);
+    }
+  }
+
+  void _showAddExamDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => _AddExamDialog(
+        classModel: _selectedClass!,
+        onSave: () => _loadGrades(),
+      ),
+    );
+  }
+}
+
+class _ExamsView extends StatelessWidget {
+  final ClassModel classModel;
+
+  const _ExamsView({required this.classModel});
+
+  @override
+  Widget build(BuildContext context) {
+    return Consumer<GradeProvider>(
+      builder: (context, gradeProvider, child) {
+        if (gradeProvider.isLoading) {
+          return const Center(
+            child: CircularProgressIndicator(),
+          );
+        }
+
+        final exams = gradeProvider.getExamsByClass(classModel.id!);
+
+        if (exams.isEmpty) {
+          return Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(
+                  Icons.quiz,
+                  size: 64,
+                  color: AppTheme.textSecondary,
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  'لا توجد اختبارات',
+                  style: TextStyle(
+                    fontSize: 18,
+                    color: AppTheme.textSecondary,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'ابدأ بإضافة اختبار جديد',
+                  style: TextStyle(
+                    color: AppTheme.textSecondary,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                ElevatedButton.icon(
+                  onPressed: () => _showAddExamDialog(context),
+                  icon: const Icon(Icons.add),
+                  label: const Text('إضافة اختبار'),
+                ),
+              ],
+            ),
+          );
+        }
+
+        return ListView.builder(
+          padding: const EdgeInsets.all(16),
+          itemCount: exams.length,
+          itemBuilder: (context, index) {
+            final exam = exams[index];
+            return _ExamCard(
+              exam: exam,
+              onTap: () => _showExamDetails(context, exam),
+              onEdit: () => _showEditExamDialog(context, exam),
+              onDelete: () => _showDeleteConfirmation(context, exam),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  void _showAddExamDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => _AddExamDialog(
+        classModel: classModel,
+        onSave: () {
+          Provider.of<GradeProvider>(context, listen: false)
+              .loadGradesByClass(classModel.id!);
+        },
+      ),
+    );
+  }
+
+  void _showEditExamDialog(BuildContext context, GradeModel exam) {
+    showDialog(
+      context: context,
+      builder: (context) => _AddExamDialog(
+        classModel: classModel,
+        exam: exam,
+        onSave: () {
+          Provider.of<GradeProvider>(context, listen: false)
+              .loadGradesByClass(classModel.id!);
+        },
+      ),
+    );
+  }
+
+  void _showExamDetails(BuildContext context, GradeModel exam) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => ExamDetailsScreen(exam: exam, classModel: classModel),
+      ),
+    );
+  }
+
+  void _showDeleteConfirmation(BuildContext context, GradeModel exam) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('تأكيد الحذف'),
+        content: Text('هل أنت متأكد من حذف اختبار "${exam.examName}"؟\nسيتم حذف جميع الدرجات المرتبطة به.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('إلغاء'),
+          ),
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              final gradeProvider = Provider.of<GradeProvider>(context, listen: false);
+              final success = await gradeProvider.deleteExam(exam.id!);
+              if (success && context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('تم حذف الاختبار بنجاح')),
+                );
+              }
+            },
+            style: TextButton.styleFrom(foregroundColor: AppTheme.errorColor),
+            child: const Text('حذف'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StudentsGradesView extends StatelessWidget {
+  final ClassModel classModel;
+
+  const _StudentsGradesView({required this.classModel});
+
+  @override
+  Widget build(BuildContext context) {
+    return Consumer2<StudentProvider, GradeProvider>(
+      builder: (context, studentProvider, gradeProvider, child) {
+        if (studentProvider.isLoading) {
+          return const Center(
+            child: CircularProgressIndicator(),
+          );
+        }
+
+        final students = studentProvider.students
+            .where((s) => s.classId == classModel.id)
+            .toList();
+
+        if (students.isEmpty) {
+          return const Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  Icons.people,
+                  size: 64,
+                  color: AppTheme.textSecondary,
+                ),
+                SizedBox(height: 16),
+                Text(
+                  'لا يوجد طلاب في هذا الفصل',
+                  style: TextStyle(
+                    fontSize: 18,
+                    color: AppTheme.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          );
+        }
+
+        return ListView.builder(
+          padding: const EdgeInsets.all(16),
+          itemCount: students.length,
+          itemBuilder: (context, index) {
+            final student = students[index];
+            final grades = gradeProvider.getGradesByStudent(student.id!);
+            final average = grades.isNotEmpty
+                ? grades.map((g) => g.score).reduce((a, b) => a + b) / grades.length
+                : 0.0;
+
+            return _StudentGradeCard(
+              student: student,
+              average: average,
+              gradesCount: grades.length,
+              onTap: () => _showStudentGrades(context, student),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  void _showStudentGrades(BuildContext context, StudentModel student) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => StudentGradesScreen(
+          student: student,
+          classModel: classModel,
+        ),
+      ),
+    );
+  }
+}
+
+class _SubjectsGradesView extends StatelessWidget {
+  final ClassModel classModel;
+
+  const _SubjectsGradesView({required this.classModel});
+
+  @override
+  Widget build(BuildContext context) {
+    return Consumer<GradeProvider>(
+      builder: (context, gradeProvider, child) {
+        if (gradeProvider.isLoading) {
+          return const Center(
+            child: CircularProgressIndicator(),
+          );
+        }
+
+        final subjects = gradeProvider.getSubjectsByClass(classModel.id!);
+
+        if (subjects.isEmpty) {
+          return const Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  Icons.subject,
+                  size: 64,
+                  color: AppTheme.textSecondary,
+                ),
+                SizedBox(height: 16),
+                Text(
+                  'لا توجد مواد دراسية',
+                  style: TextStyle(
+                    fontSize: 18,
+                    color: AppTheme.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          );
+        }
+
+        return ListView.builder(
+          padding: const EdgeInsets.all(16),
+          itemCount: subjects.length,
+          itemBuilder: (context, index) {
+            final subject = subjects[index];
+            final grades = gradeProvider.getGradesBySubject(classModel.id!, subject);
+            final average = grades.isNotEmpty
+                ? grades.map((g) => g.score).reduce((a, b) => a + b) / grades.length
+                : 0.0;
+
+            return _SubjectGradeCard(
+              subject: subject,
+              average: average,
+              gradesCount: grades.length,
+              onTap: () => _showSubjectGrades(context, subject),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  void _showSubjectGrades(BuildContext context, String subject) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => SubjectGradesScreen(
+          subject: subject,
+          classModel: classModel,
+        ),
+      ),
+    );
+  }
+}
+
+class _ExamCard extends StatelessWidget {
+  final GradeModel exam;
+  final VoidCallback onTap;
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
+
+  const _ExamCard({
+    required this.exam,
+    required this.onTap,
+    required this.onEdit,
+    required this.onDelete,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 50,
+                    height: 50,
+                    decoration: BoxDecoration(
+                      color: AppTheme.primaryColor.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: const Icon(
+                      Icons.quiz,
+                      color: AppTheme.primaryColor,
+                      size: 24,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          exam.examName,
+                          style: const TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          '${exam.subject} - ${exam.maxScore} درجة',
+                          style: const TextStyle(
+                            color: AppTheme.textSecondary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  PopupMenuButton(
+                    itemBuilder: (context) => [
+                      const PopupMenuItem(
+                        value: 'edit',
+                        child: Row(
+                          children: [
+                            Icon(Icons.edit, size: 20),
+                            SizedBox(width: 8),
+                            Text('تعديل'),
+                          ],
+                        ),
+                      ),
+                      const PopupMenuItem(
+                        value: 'delete',
+                        child: Row(
+                          children: [
+                            Icon(Icons.delete, size: 20, color: AppTheme.errorColor),
+                            SizedBox(width: 8),
+                            Text('حذف', style: TextStyle(color: AppTheme.errorColor)),
+                          ],
+                        ),
+                      ),
+                    ],
+                    onSelected: (value) {
+                      if (value == 'edit') {
+                        onEdit();
+                      } else if (value == 'delete') {
+                        onDelete();
+                      }
+                    },
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  _InfoChip(
+                    icon: Icons.calendar_today,
+                    label: '${exam.examDate.day}/${exam.examDate.month}/${exam.examDate.year}',
+                  ),
+                  const SizedBox(width: 8),
+                  _InfoChip(
+                    icon: Icons.people,
+                    label: '${exam.studentCount} طالب',
+                  ),
+                  const SizedBox(width: 8),
+                  _InfoChip(
+                    icon: Icons.assessment,
+                    label: 'المعدل: ${exam.average.toStringAsFixed(1)}',
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _StudentGradeCard extends StatelessWidget {
+  final StudentModel student;
+  final double average;
+  final int gradesCount;
+  final VoidCallback onTap;
+
+  const _StudentGradeCard({
+    required this.student,
+    required this.average,
+    required this.gradesCount,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    Color averageColor = AppTheme.successColor;
+    if (average < 60) {
+      averageColor = AppTheme.errorColor;
+    } else if (average < 75) {
+      averageColor = AppTheme.warningColor;
+    }
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Row(
+            children: [
+              CircleAvatar(
+                radius: 30,
+                backgroundColor: AppTheme.primaryColor.withOpacity(0.1),
+                backgroundImage: student.photo != null ? NetworkImage(student.photo!) : null,
+                child: student.photo == null
+                    ? Text(
+                        student.name.substring(0, 1).toUpperCase(),
+                        style: TextStyle(
+                          fontSize: 24,
+                          fontWeight: FontWeight.bold,
+                          color: AppTheme.primaryColor,
+                        ),
+                      )
+                    : null,
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      student.name,
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'الرقم: ${student.studentId}',
+                      style: const TextStyle(
+                        color: AppTheme.textSecondary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text(
+                    average.toStringAsFixed(1),
+                    style: TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold,
+                      color: averageColor,
+                    ),
+                  ),
+                  Text(
+                    '$gradesCount اختبار',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: AppTheme.textSecondary,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SubjectGradeCard extends StatelessWidget {
+  final String subject;
+  final double average;
+  final int gradesCount;
+  final VoidCallback onTap;
+
+  const _SubjectGradeCard({
+    required this.subject,
+    required this.average,
+    required this.gradesCount,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    Color averageColor = AppTheme.successColor;
+    if (average < 60) {
+      averageColor = AppTheme.errorColor;
+    } else if (average < 75) {
+      averageColor = AppTheme.warningColor;
+    }
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Row(
+            children: [
+              Container(
+                width: 50,
+                height: 50,
+                decoration: BoxDecoration(
+                  color: AppTheme.primaryColor.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Icon(
+                  Icons.subject,
+                  color: AppTheme.primaryColor,
+                  size: 24,
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      subject,
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '$gradesCount اختبار',
+                      style: const TextStyle(
+                        color: AppTheme.textSecondary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text(
+                    average.toStringAsFixed(1),
+                    style: TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold,
+                      color: averageColor,
+                    ),
+                  ),
+                  const Text(
+                    'معدل',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: AppTheme.textSecondary,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _InfoChip extends StatelessWidget {
+  final IconData icon;
+  final String label;
+
+  const _InfoChip({
+    required this.icon,
+    required this.label,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: AppTheme.backgroundColor,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            icon,
+            size: 14,
+            color: AppTheme.textSecondary,
+          ),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 12,
+              color: AppTheme.textSecondary,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AddExamDialog extends StatefulWidget {
+  final ClassModel classModel;
+  final GradeModel? exam;
+  final VoidCallback onSave;
+
+  const _AddExamDialog({
+    required this.classModel,
+    this.exam,
+    required this.onSave,
+  });
+
+  @override
+  State<_AddExamDialog> createState() => _AddExamDialogState();
+}
+
+class _AddExamDialogState extends State<_AddExamDialog> {
+  final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _examNameController;
+  late final TextEditingController _subjectController;
+  late final TextEditingController _maxScoreController;
+  DateTime _selectedDate = DateTime.now();
+
+  @override
+  void initState() {
+    super.initState();
+    _examNameController = TextEditingController(text: widget.exam?.examName ?? '');
+    _subjectController = TextEditingController(text: widget.exam?.subject ?? '');
+    _maxScoreController = TextEditingController(text: widget.exam?.maxScore.toString() ?? '100');
+    _selectedDate = widget.exam?.examDate ?? DateTime.now();
+  }
+
+  @override
+  void dispose() {
+    _examNameController.dispose();
+    _subjectController.dispose();
+    _maxScoreController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isEditing = widget.exam != null;
+
+    return AlertDialog(
+      title: Text(isEditing ? 'تعديل الاختبار' : 'إضافة اختبار جديد'),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextFormField(
+                controller: _examNameController,
+                decoration: const InputDecoration(
+                  labelText: 'اسم الاختبار',
+                  hintText: 'مثال: الاختبار الأول',
+                ),
+                validator: (value) {
+                  if (value == null || value.isEmpty) {
+                    return 'يرجى إدخال اسم الاختبار';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _subjectController,
+                decoration: const InputDecoration(
+                  labelText: 'المادة',
+                  hintText: 'مثال: الرياضيات',
+                ),
+                validator: (value) {
+                  if (value == null || value.isEmpty) {
+                    return 'يرجى إدخال المادة';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _maxScoreController,
+                decoration: const InputDecoration(
+                  labelText: 'الدرجة القصوى',
+                  hintText: 'مثال: 100',
+                ),
+                keyboardType: TextInputType.number,
+                validator: (value) {
+                  if (value == null || value.isEmpty) {
+                    return 'يرجى إدخال الدرجة القصوى';
+                  }
+                  final score = double.tryParse(value);
+                  if (score == null || score <= 0) {
+                    return 'يرجى إدخال درجة صحيحة';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 16),
+              InkWell(
+                onTap: () => _selectDate(context),
+                child: Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: AppTheme.primaryColor),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.calendar_today, color: AppTheme.primaryColor),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'تاريخ الاختبار: ${_formatDate(_selectedDate)}',
+                          style: const TextStyle(color: AppTheme.primaryColor),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('إلغاء'),
+        ),
+        Consumer<GradeProvider>(
+          builder: (context, gradeProvider, child) {
+            return ElevatedButton(
+              onPressed: gradeProvider.isLoading ? null : () async {
+                if (_formKey.currentState!.validate()) {
+                  bool success;
+                  
+                  if (isEditing) {
+                    success = await gradeProvider.updateExam(
+                      widget.exam!.copyWith(
+                        examName: _examNameController.text.trim(),
+                        subject: _subjectController.text.trim(),
+                        maxScore: double.parse(_maxScoreController.text.trim()),
+                        examDate: _selectedDate,
+                      ),
+                    );
+                  } else {
+                    success = await gradeProvider.addExam(
+                      _examNameController.text.trim(),
+                      _subjectController.text.trim(),
+                      double.parse(_maxScoreController.text.trim()),
+                      _selectedDate,
+                      widget.classModel.id!,
+                    );
+                  }
+
+                  if (success && context.mounted) {
+                    Navigator.pop(context);
+                    widget.onSave();
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(isEditing ? 'تم تحديث الاختبار بنجاح' : 'تم إضافة الاختبار بنجاح'),
+                      ),
+                    );
+                  }
+                }
+              },
+              child: gradeProvider.isLoading
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : Text(isEditing ? 'تحديث' : 'إضافة'),
+            );
+          },
+        ),
+      ],
+    );
+  }
+
+  Future<void> _selectDate(BuildContext context) async {
+    final DateTime? picked = await showDatePicker(
+      context: context,
+      initialDate: _selectedDate,
+      firstDate: DateTime.now(),
+      lastDate: DateTime.now().add(const Duration(days: 365)),
+    );
+    if (picked != null && picked != _selectedDate) {
+      setState(() {
+        _selectedDate = picked;
+      });
+    }
+  }
+
+  String _formatDate(DateTime date) {
+    return '${date.day}/${date.month}/${date.year}';
+  }
+}
+
+class ExamDetailsScreen extends StatelessWidget {
+  final GradeModel exam;
+  final ClassModel classModel;
+
+  const ExamDetailsScreen({
+    super.key,
+    required this.exam,
+    required this.classModel,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(exam.examName),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.edit),
+            onPressed: () => _showEditExamDialog(context),
+          ),
+        ],
+      ),
+      body: Consumer<GradeProvider>(
+        builder: (context, gradeProvider, child) {
+          final studentGrades = gradeProvider.getStudentGradesByExam(exam.id!);
+
+          return Column(
+            children: [
+              // معلومات الاختبار
+              Container(
+                padding: const EdgeInsets.all(16),
+                color: AppTheme.backgroundColor,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      exam.examName,
+                      style: const TextStyle(
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        _InfoItem(
+                          icon: Icons.subject,
+                          label: 'المادة',
+                          value: exam.subject,
+                        ),
+                        const SizedBox(width: 16),
+                        _InfoItem(
+                          icon: Icons.assessment,
+                          label: 'الدرجة القصوى',
+                          value: exam.maxScore.toString(),
+                        ),
+                        const SizedBox(width: 16),
+                        _InfoItem(
+                          icon: Icons.calendar_today,
+                          label: 'التاريخ',
+                          value: '${exam.examDate.day}/${exam.examDate.month}/${exam.examDate.year}',
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        _InfoItem(
+                          icon: Icons.people,
+                          label: 'عدد الطلاب',
+                          value: exam.studentCount.toString(),
+                        ),
+                        const SizedBox(width: 16),
+                        _InfoItem(
+                          icon: Icons.trending_up,
+                          label: 'المعدل',
+                          value: exam.average.toStringAsFixed(1),
+                        ),
+                        const SizedBox(width: 16),
+                        _InfoItem(
+                          icon: Icons.star,
+                          label: 'أعلى درجة',
+                          value: exam.highestScore.toString(),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              
+              // درجات الطلاب
+              Expanded(
+                child: studentGrades.isEmpty
+                    ? const Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                              Icons.grade,
+                              size: 64,
+                              color: AppTheme.textSecondary,
+                            ),
+                            SizedBox(height: 16),
+                            Text(
+                              'لا توجد درجات مسجلة',
+                              style: TextStyle(
+                                fontSize: 18,
+                                color: AppTheme.textSecondary,
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                    : ListView.builder(
+                        padding: const EdgeInsets.all(16),
+                        itemCount: studentGrades.length,
+                        itemBuilder: (context, index) {
+                          final grade = studentGrades[index];
+                          return _StudentGradeItem(grade: grade, maxScore: exam.maxScore);
+                        },
+                      ),
+              ),
+            ],
+          );
+        },
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: () => _showAddGradeDialog(context),
+        child: const Icon(Icons.add),
+      ),
+    );
+  }
+
+  void _showEditExamDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => _AddExamDialog(
+        classModel: classModel,
+        exam: exam,
+        onSave: () {
+          Provider.of<GradeProvider>(context, listen: false)
+              .loadGradesByClass(classModel.id!);
+        },
+      ),
+    );
+  }
+
+  void _showAddGradeDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => _AddGradeDialog(
+        exam: exam,
+        classModel: classModel,
+        onSave: () {
+          Provider.of<GradeProvider>(context, listen: false)
+              .loadGradesByClass(classModel.id!);
+        },
+      ),
+    );
+  }
+}
+
+class _InfoItem extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+
+  const _InfoItem({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Icon(
+          icon,
+          size: 16,
+          color: AppTheme.textSecondary,
+        ),
+        const SizedBox(width: 4),
+        Text(
+          '$label: ',
+          style: const TextStyle(
+            color: AppTheme.textSecondary,
+            fontSize: 14,
+          ),
+        ),
+        Text(
+          value,
+          style: const TextStyle(
+            fontWeight: FontWeight.w500,
+            fontSize: 14,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _StudentGradeItem extends StatelessWidget {
+  final GradeModel grade;
+  final double maxScore;
+
+  const _StudentGradeItem({
+    required this.grade,
+    required this.maxScore,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final percentage = (grade.score / maxScore) * 100;
+    Color gradeColor = AppTheme.successColor;
+    if (percentage < 60) {
+      gradeColor = AppTheme.errorColor;
+    } else if (percentage < 75) {
+      gradeColor = AppTheme.warningColor;
+    }
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: ListTile(
+        leading: CircleAvatar(
+          backgroundColor: gradeColor.withOpacity(0.1),
+          child: Text(
+            grade.score.toString(),
+            style: TextStyle(
+              color: gradeColor,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ),
+        title: Text(grade.studentName),
+        subtitle: Text('${percentage.toStringAsFixed(1)}%'),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              '${grade.score}/${maxScore.toInt()}',
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                color: gradeColor,
+              ),
+            ),
+            const SizedBox(width: 8),
+            PopupMenuButton(
+              itemBuilder: (context) => [
+                const PopupMenuItem(
+                  value: 'edit',
+                  child: Row(
+                    children: [
+                      Icon(Icons.edit, size: 20),
+                      SizedBox(width: 8),
+                      Text('تعديل'),
+                    ],
+                  ),
+                ),
+                const PopupMenuItem(
+                  value: 'delete',
+                  child: Row(
+                    children: [
+                      Icon(Icons.delete, size: 20, color: AppTheme.errorColor),
+                      SizedBox(width: 8),
+                      Text('حذف', style: TextStyle(color: AppTheme.errorColor)),
+                    ],
+                  ),
+                ),
+              ],
+              onSelected: (value) {
+                if (value == 'edit') {
+                  // TODO: تعديل درجة الطالب
+                } else if (value == 'delete') {
+                  // TODO: حذف درجة الطالب
+                }
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AddGradeDialog extends StatefulWidget {
+  final GradeModel exam;
+  final ClassModel classModel;
+  final VoidCallback onSave;
+
+  const _AddGradeDialog({
+    required this.exam,
+    required this.classModel,
+    required this.onSave,
+  });
+
+  @override
+  State<_AddGradeDialog> createState() => _AddGradeDialogState();
+}
+
+class _AddGradeDialogState extends State<_AddGradeDialog> {
+  final _formKey = GlobalKey<FormState>();
+  StudentModel? _selectedStudent;
+  late final TextEditingController _scoreController;
+
+  @override
+  void initState() {
+    super.initState();
+    _scoreController = TextEditingController();
+  }
+
+  @override
+  void dispose() {
+    _scoreController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('إضافة درجة طالب'),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Consumer<StudentProvider>(
+                builder: (context, studentProvider, child) {
+                  final students = studentProvider.students
+                      .where((s) => s.classId == widget.classModel.id)
+                      .toList();
+
+                  if (students.isEmpty) {
+                    return const Text('لا يوجد طلاب في هذا الفصل');
+                  }
+
+                  return DropdownButtonFormField<StudentModel>(
+                    value: _selectedStudent,
+                    decoration: const InputDecoration(
+                      labelText: 'اختر الطالب',
+                      hintText: 'اختر الطالب',
+                    ),
+                    items: students.map((student) {
+                      return DropdownMenuItem(
+                        value: student,
+                        child: Text(student.name),
+                      );
+                    }).toList(),
+                    onChanged: (value) {
+                      setState(() {
+                        _selectedStudent = value;
+                      });
+                    },
+                    validator: (value) {
+                      if (value == null) {
+                        return 'يرجى اختيار الطالب';
+                      }
+                      return null;
+                    },
+                  );
+                },
+              ),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _scoreController,
+                decoration: InputDecoration(
+                  labelText: 'الدرجة',
+                  hintText: 'أدخل درجة الطالب (0 - ${widget.exam.maxScore.toInt()})',
+                ),
+                keyboardType: TextInputType.number,
+                validator: (value) {
+                  if (value == null || value.isEmpty) {
+                    return 'يرجى إدخال الدرجة';
+                  }
+                  final score = double.tryParse(value);
+                  if (score == null || score < 0 || score > widget.exam.maxScore) {
+                    return 'يرجى إدخال درجة صحيحة بين 0 و ${widget.exam.maxScore.toInt()}';
+                  }
+                  return null;
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('إلغاء'),
+        ),
+        Consumer<GradeProvider>(
+          builder: (context, gradeProvider, child) {
+            return ElevatedButton(
+              onPressed: gradeProvider.isLoading ? null : () async {
+                if (_formKey.currentState!.validate() && _selectedStudent != null) {
+                  final success = await gradeProvider.addStudentGrade(
+                    widget.exam.id!,
+                    _selectedStudent!.id!,
+                    _selectedStudent!.name,
+                    double.parse(_scoreController.text.trim()),
+                  );
+
+                  if (success && context.mounted) {
+                    Navigator.pop(context);
+                    widget.onSave();
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('تم إضافة الدرجة بنجاح')),
+                    );
+                  }
+                }
+              },
+              child: gradeProvider.isLoading
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Text('إضافة'),
+            );
+          },
+        ),
+      ],
+    );
+  }
+}
+
+class StudentGradesScreen extends StatelessWidget {
+  final StudentModel student;
+  final ClassModel classModel;
+
+  const StudentGradesScreen({
+    super.key,
+    required this.student,
+    required this.classModel,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('درجات ${student.name}'),
+      ),
+      body: Consumer<GradeProvider>(
+        builder: (context, gradeProvider, child) {
+          final grades = gradeProvider.getGradesByStudent(student.id!);
+
+          if (grades.isEmpty) {
+            return const Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.grade,
+                    size: 64,
+                    color: AppTheme.textSecondary,
+                  ),
+                  SizedBox(height: 16),
+                  Text(
+                    'لا توجد درجات مسجلة',
+                    style: TextStyle(
+                      fontSize: 18,
+                      color: AppTheme.textSecondary,
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }
+
+          final average = grades.map((g) => g.score).reduce((a, b) => a + b) / grades.length;
+
+          return Column(
+            children: [
+              // ملخص الدرجات
+              Container(
+                padding: const EdgeInsets.all(16),
+                color: AppTheme.backgroundColor,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceAround,
+                  children: [
+                    _GradeSummary(
+                      label: 'المعدل',
+                      value: average.toStringAsFixed(1),
+                      color: _getGradeColor(average),
+                    ),
+                    _GradeSummary(
+                      label: 'عدد الاختبارات',
+                      value: grades.length.toString(),
+                      color: AppTheme.primaryColor,
+                    ),
+                    _GradeSummary(
+                      label: 'أعلى درجة',
+                      value: grades.map((g) => g.score).reduce((a, b) => a > b ? a : b).toString(),
+                      color: AppTheme.successColor,
+                    ),
+                    _GradeSummary(
+                      label: 'أقل درجة',
+                      value: grades.map((g) => g.score).reduce((a, b) => a < b ? a : b).toString(),
+                      color: AppTheme.errorColor,
+                    ),
+                  ],
+                ),
+              ),
+              
+              // قائمة الدرجات
+              Expanded(
+                child: ListView.builder(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: grades.length,
+                  itemBuilder: (context, index) {
+                    final grade = grades[index];
+                    return _GradeItem(grade: grade);
+                  },
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Color _getGradeColor(double grade) {
+    if (grade >= 75) return AppTheme.successColor;
+    if (grade >= 60) return AppTheme.warningColor;
+    return AppTheme.errorColor;
+  }
+}
+
+class SubjectGradesScreen extends StatelessWidget {
+  final String subject;
+  final ClassModel classModel;
+
+  const SubjectGradesScreen({
+    super.key,
+    required this.subject,
+    required this.classModel,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('درجات مادة $subject'),
+      ),
+      body: Consumer<GradeProvider>(
+        builder: (context, gradeProvider, child) {
+          final grades = gradeProvider.getGradesBySubject(classModel.id!, subject);
+
+          if (grades.isEmpty) {
+            return const Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.subject,
+                    size: 64,
+                    color: AppTheme.textSecondary,
+                  ),
+                  SizedBox(height: 16),
+                  Text(
+                    'لا توجد درجات مسجلة لهذه المادة',
+                    style: TextStyle(
+                      fontSize: 18,
+                      color: AppTheme.textSecondary,
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }
+
+          return ListView.builder(
+            padding: const EdgeInsets.all(16),
+            itemCount: grades.length,
+            itemBuilder: (context, index) {
+              final grade = grades[index];
+              return _GradeItem(grade: grade);
+            },
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _GradeSummary extends StatelessWidget {
+  final String label;
+  final String value;
+  final Color color;
+
+  const _GradeSummary({
+    required this.label,
+    required this.value,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.bold,
+            color: color,
+          ),
+        ),
+        Text(
+          label,
+          style: const TextStyle(
+            fontSize: 12,
+            color: AppTheme.textSecondary,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _GradeItem extends StatelessWidget {
+  final GradeModel grade;
+
+  const _GradeItem({required this.grade});
+
+  @override
+  Widget build(BuildContext context) {
+    Color gradeColor = AppTheme.successColor;
+    if (grade.score < 60) {
+      gradeColor = AppTheme.errorColor;
+    } else if (grade.score < 75) {
+      gradeColor = AppTheme.warningColor;
+    }
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: ListTile(
+        leading: CircleAvatar(
+          backgroundColor: gradeColor.withOpacity(0.1),
+          child: Text(
+            grade.score.toString(),
+            style: TextStyle(
+              color: gradeColor,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ),
+        title: Text(grade.examName),
+        subtitle: Text('${grade.subject} - ${grade.examDate.day}/${grade.examDate.month}/${grade.examDate.year}'),
+        trailing: Text(
+          '${grade.score}/${grade.maxScore.toInt()}',
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
+            color: gradeColor,
+          ),
+        ),
+      ),
+    );
+  }
+}

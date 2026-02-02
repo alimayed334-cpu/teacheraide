@@ -1,0 +1,52 @@
+# This file configures the analyzer, which statically analyzes Dart code to
+# check for errors, warnings, and lints.
+#
+# The issues identified by the analyzer are surfaced in the UI of Dart-enabled
+# IDEs (https://dart.dev/tools#ides-and-editors). The analyzer can also be
+# invoked from the command line by running `flutter analyze`.
+
+# The following line activates a set of recommended lints for Flutter apps,
+# packages, and plugins designed to encourage good coding practices.
+include: package:flutter_lints/flutter.yaml
+
+analyzer:
+  exclude:
+    - lib/**/**backup*.dart
+    - lib/**/**fixed*.dart
+    - lib/**/**temp*.dart
+    - lib/database/database_helper_additions.dart
+    - lib/screens/messaging_screen_old.dart
+    - lib/screens/notes/class_notes_screen_v2.dart
+    - lib/screens/notes/student_notes_screen.dart
+    - lib/screens/exams/exams_screen_clean.dart
+    - lib/screens/exams/exams_screen_final_attendance_style.dart
+    - lib/screens/students/student_assignments_screen_updated.dart
+    - lib/screens/students/student_attendance_screen_backup.dart
+    - lib/services/notes_sync_service.dart
+    - lib/screens/at_risk/at_risk_students_screen_backup.dart
+    - lib/screens/at_risk/at_risk_students_screen_fixed.dart
+    - lib/screens/attendance/new_attendance_screen.backup.dart
+    - lib/screens/attendance/new_attendance_screen_backup.dart
+    - lib/screens/attendance/new_attendance_screen_final.dart
+    - lib/screens/attendance/new_attendance_screen_original.dart
+    - lib/screens/attendance/new_attendance_screen_restored.dart
+    - lib/screens/attendance/test_pdf_screen.dart
+    - lib/screens/auth/login_screen.dart
+
+linter:
+  # The lint rules applied to this project can be customized in the
+  # section below to disable rules from the `package:flutter_lints/flutter.yaml`
+  # included above or to enable additional rules. A list of all available lints
+  # and their documentation is published at https://dart.dev/lints.
+  #
+  # Instead of disabling a lint rule for the entire project in the
+  # section below, it can also be suppressed for a single line of code
+  # or a specific dart file by using the `// ignore: name_of_lint` and
+  # `// ignore_for_file: name_of_lint` syntax on the line or in the file
+  # producing the lint.
+  rules:
+    # avoid_print: false  # Uncomment to disable the `avoid_print` rule
+    # prefer_single_quotes: true  # Uncomment to enable the `prefer_single_quotes` rule
+
+# Additional information about this file can be found at
+# https://dart.dev/guides/language/analysis-options

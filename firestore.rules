@@ -1,0 +1,138 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function bootstrapDoc() {
+      return get(/databases/$(database)/documents/system/bootstrap).data;
+    }
+
+    function hasBootstrap() {
+      return exists(/databases/$(database)/documents/system/bootstrap);
+    }
+
+    function myUserDoc() {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data
+        : {};
+    }
+
+    function myRole() {
+      return signedIn() ? (myUserDoc().role) : null;
+    }
+
+    function isBanned() {
+      return myRole() == 'banned';
+    }
+
+    function isAdmin() {
+      return myRole() == 'admin';
+    }
+
+    function isAssistant() {
+      return myRole() == 'assistant' || myRole() == 'user';
+    }
+
+    function isApproved() {
+      return isAdmin() || isAssistant();
+    }
+
+    function myWorkspaceId() {
+      return signedIn() ? myUserDoc().workspaceId : null;
+    }
+
+    function sameWorkspace(workspaceId) {
+      return myWorkspaceId() != null && myWorkspaceId() == workspaceId;
+    }
+
+    // Bootstrap: first user claims admin + creates workspace id.
+    // We allow exactly one create if the document doesn't exist.
+    match /system/bootstrap {
+      allow read: if signedIn();
+      allow create: if signedIn() && !hasBootstrap();
+      allow update, delete: if false;
+    }
+
+    // Users collection
+    match /users/{uid} {
+      // IMPORTANT:
+      // Avoid calling isAdmin()/isBanned() here because they rely on reading the caller's
+      // own user doc (myUserDoc/get), which can cause circular evaluation when this is the
+      // very first read of /users/{uid}.
+      allow read: if signedIn()
+        && (
+          // Always allow a user to read their own user doc
+          uid == request.auth.uid
+          // Admin can read other users
+          || (!isBanned() && isAdmin())
+        );
+
+      // Create own user doc if missing
+      allow create: if signedIn() && uid == request.auth.uid
+        && (
+          // First user bootstrap: allow creating admin
+          (!hasBootstrap() && request.resource.data.role == 'admin')
+          // After bootstrap exists: new users must be assistants
+          || (hasBootstrap() && request.resource.data.role == 'assistant')
+        );
+
+      // User can update only their own basic fields (no role/workspace changes)
+      // Use resource.data.role to block banned users without reading myUserDoc.
+      allow update: if signedIn() && uid == request.auth.uid
+        && resource.data.role != 'banned'
+        && (
+          // Normal profile updates (no role/workspace changes)
+          (
+            request.resource.data.role == resource.data.role
+            && request.resource.data.workspaceId == resource.data.workspaceId
+          )
+          // Allow attaching workspaceId once if it was missing. Must match the bootstrap workspace.
+          || (
+            hasBootstrap()
+            && (resource.data.workspaceId == null || resource.data.workspaceId == '')
+            && request.resource.data.role == resource.data.role
+            && request.resource.data.workspaceId == bootstrapDoc().workspaceId
+          )
+          // First bootstrap: if bootstrap doesn't exist yet, allow the first user
+          // to self-promote to admin and attach a workspaceId.
+          || (
+            !hasBootstrap()
+            && request.resource.data.role == 'admin'
+            && request.resource.data.workspaceId is string
+            && request.resource.data.workspaceId.size() > 0
+          )
+          // Bootstrap recovery: allow the bootstrap owner to promote themselves to admin
+          // and attach the bootstrap workspace id.
+          || (
+            hasBootstrap()
+            && bootstrapDoc().ownerUid == request.auth.uid
+            && request.resource.data.role == 'admin'
+            && request.resource.data.workspaceId == bootstrapDoc().workspaceId
+          )
+        );
+
+      // Admin can manage anyone (role, ban, delete)
+      allow update, delete: if signedIn() && isAdmin();
+    }
+
+    // Workspace data
+    match /workspaces/{workspaceId} {
+      allow read: if signedIn() && !isBanned() && isApproved() && sameWorkspace(workspaceId);
+      allow create: if signedIn() && !isBanned()
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.workspaceId == workspaceId;
+      allow update, delete: if signedIn() && !isBanned() && isAdmin() && sameWorkspace(workspaceId);
+
+      match /{document=**} {
+        allow read, write: if signedIn() && !isBanned() && isApproved() && sameWorkspace(workspaceId);
+      }
+    }
+
+    // Deny all other paths by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
