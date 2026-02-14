@@ -11,6 +11,7 @@ app = Flask(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}" if BOT_TOKEN else ""
+WORKSPACE_ID = os.getenv("WORKSPACE_ID")
 
 
 def _init_firestore():
@@ -33,6 +34,12 @@ def _init_firestore():
 
 
 db = _init_firestore()
+
+
+def _ws_collection(name: str):
+    if WORKSPACE_ID and WORKSPACE_ID.strip():
+        return db.collection("workspaces").document(WORKSPACE_ID.strip()).collection(name)
+    return db.collection(name)
 
 
 def send_message(chat_id, text, keyboard=None):
@@ -74,7 +81,7 @@ def save_user(chat_id, role, student_phone=None):
 
 
 def get_user_by_phone(phone: str):
-    docs = db.collection("students").where("phone", "==", phone).limit(1).get()
+    docs = _ws_collection("students").where("phone", "==", phone).limit(1).get()
     if not docs:
         return None
     return docs[0].to_dict()
@@ -85,7 +92,7 @@ def get_student_by_phone(phone: str):
 
 
 def _find_student_doc_by_phone(phone: str):
-    docs = db.collection("students").where("phone", "==", phone).limit(1).get()
+    docs = _ws_collection("students").where("phone", "==", phone).limit(1).get()
     if not docs:
         return None, None
     doc = docs[0]
@@ -125,7 +132,7 @@ def webhook():
 
         if chat.get("type") in ["group", "supergroup"]:
             title = chat.get("title", "Unknown")
-            db.collection("groups").document(str(chat_id)).set(
+            _ws_collection("groups").document(str(chat_id)).set(
                 {"chat_id": chat_id, "title": title},
                 merge=True,
             )
@@ -178,7 +185,7 @@ def webhook():
 
 @app.route("/groups", methods=["GET"])
 def get_groups():
-    docs = db.collection("groups").get()
+    docs = _ws_collection("groups").get()
     groups = []
     for d in docs:
         data = d.to_dict() or {}
