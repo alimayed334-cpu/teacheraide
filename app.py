@@ -3,18 +3,30 @@ import psycopg2
 import os
 import requests
 
-app = Flask(__name__)
+# ======================
+# إعداد Flask
+# ======================
+app = Flask(name)
 
+# ======================
+# المتغيرات من Environment
+# ======================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 
+# ======================
+# دالة الاتصال بقاعدة البيانات
+# ======================
 def get_db():
     return psycopg2.connect(DATABASE_URL)
 
 
+# ======================
+# دالة إرسال الرسائل
+# ======================
 def send_message(chat_id, text, keyboard=None):
     payload = {
         "chat_id": chat_id,
@@ -27,6 +39,9 @@ def send_message(chat_id, text, keyboard=None):
     requests.post(f"{TELEGRAM_API}/sendMessage", json=payload)
 
 
+# ======================
+# Webhook لتلقي الرسائل من Telegram
+# ======================
 @app.route("/webhook", methods=["POST"])
 def webhook():
 
@@ -43,6 +58,7 @@ def webhook():
     conn = get_db()
     cur = conn.cursor()
 
+    # إذا كانت الرسالة من جروب
     if chat["type"] in ["group", "supergroup"]:
         title = chat.get("title", "Unknown")
 
@@ -61,6 +77,7 @@ def webhook():
         conn.close()
         return "ok"
 
+    # تحقق من المستخدم
     cur.execute("SELECT role, student_id FROM users WHERE chat_id=%s", (chat_id,))
     user = cur.fetchone()
 
@@ -125,6 +142,9 @@ def webhook():
     return "ok"
 
 
+# ======================
+# جلب جميع الكروبات
+# ======================
 @app.route("/groups", methods=["GET"])
 def get_groups():
 
@@ -143,6 +163,9 @@ def get_groups():
     ])
 
 
+# ======================
+# إرسال رسالة لمستخدم معين
+# ======================
 @app.route("/send-user", methods=["POST"])
 def send_user():
     data = request.json
@@ -151,6 +174,9 @@ def send_user():
     return {"status": "sent"}
 
 
+# ======================
+# إرسال رسالة للجروب
+# ======================
 @app.route("/send-group", methods=["POST"])
 def send_group():
     data = request.json
@@ -158,12 +184,3 @@ def send_group():
     requests.post(f"{TELEGRAM_API}/sendMessage", json=data)
 
     return {"status": "sent"}
-
-
-@app.route("/")
-def home():
-    return "Bot Running"
-if name == "main":
-    import os
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
