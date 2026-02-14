@@ -183,4 +183,17 @@ def send_group():
 
     requests.post(f"{TELEGRAM_API}/sendMessage", json=data)
 
-    return {"status": "sent"}
+    return {"status": "sent"}    # ======================
+# صفحة الرئيسية للتأكد من أن البوت شغال
+#======================
+@app.route("/")
+def home():
+    return "Bot Running"
+
+
+# ======================
+# تشغيل التطبيق
+# ======================
+if name == "main":
+    port = int(os.environ.get("PORT", 10000))  # Port ديناميكي
+    app.run(host="0.0.0.0", port=port)
