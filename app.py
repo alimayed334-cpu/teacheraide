@@ -3,7 +3,7 @@ import psycopg2
 import os
 import requests
 
-app = Flask(__name__)
+app = Flask(name)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -165,5 +165,7 @@ def home():
     return "Bot Running"
 
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+if name == "main":
+    # استخدم PORT ديناميكي حسب ما يعطيه Railway
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
