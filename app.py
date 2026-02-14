@@ -6,7 +6,7 @@ import requests
 # ======================
 # إعداد Flask
 # ======================
-app = Flask(name)
+app = Flask(__name__)
 
 # ======================
 # المتغيرات من Environment
