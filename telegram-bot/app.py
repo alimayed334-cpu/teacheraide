@@ -54,7 +54,12 @@ def send_message(chat_id, text, keyboard=None):
     if not TELEGRAM_API:
         return
 
-    requests.post(f"{TELEGRAM_API}/sendMessage", json=payload)
+    try:
+        resp = requests.post(f"{TELEGRAM_API}/sendMessage", json=payload, timeout=30)
+        if resp.status_code < 200 or resp.status_code >= 300:
+            print(f"Telegram sendMessage failed status={resp.status_code} body={resp.text}")
+    except Exception as e:
+        print(f"Telegram sendMessage exception: {e}")
 
 
 def send_document(chat_id, file_path, caption=None):
