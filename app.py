@@ -3,7 +3,7 @@ import psycopg2
 import os
 import requests
 
-app = Flask(name)
+app = Flask(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
