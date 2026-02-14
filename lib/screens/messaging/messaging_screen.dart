@@ -1497,10 +1497,16 @@ class _MessagingScreenState extends State<MessagingScreen> {
 
   Future<int?> _getTelegramChatIdForStudent(StudentModel student) async {
     try {
+      final auth = Provider.of<AuthProvider>(context, listen: false);
+      final ws = auth.workspaceId;
+      final studentsCol = (ws != null && ws.trim().isNotEmpty)
+          ? FirebaseFirestore.instance.collection('workspaces').doc(ws).collection('students')
+          : FirebaseFirestore.instance.collection('students');
+
       final sid = student.id?.toString();
       DocumentSnapshot<Map<String, dynamic>>? doc;
       if (sid != null && sid.isNotEmpty) {
-        doc = await FirebaseFirestore.instance.collection('students').doc(sid).get();
+        doc = await studentsCol.doc(sid).get();
       }
 
       Map<String, dynamic>? data;
@@ -1509,8 +1515,7 @@ class _MessagingScreenState extends State<MessagingScreen> {
       } else {
         final phone = (student.phone ?? '').trim();
         if (phone.isNotEmpty) {
-          final qs = await FirebaseFirestore.instance
-              .collection('students')
+          final qs = await studentsCol
               .where('phone', isEqualTo: phone)
               .limit(1)
               .get();
