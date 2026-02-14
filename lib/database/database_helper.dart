@@ -15,15 +15,47 @@ import '../models/lecture_model.dart';
 import '../models/exam_model.dart';
 import '../models/note_model.dart';
 import '../models/message_model.dart';
+import '../models/assignment_model.dart';
+import '../models/assignment_student_model.dart';
 
 class DatabaseHelper {
   static final DatabaseHelper _instance = DatabaseHelper._internal();
   factory DatabaseHelper() => _instance;
   DatabaseHelper._internal();
 
+  static const String _databaseName = 'teacher_aide.db';
+
   static Database? _database;
-  static const int _databaseVersion = 15;
+  static const int _databaseVersion = 26;
   static bool _forceReinit = false;
+
+  Future<bool> hasLocalAppData() async {
+    final db = await database;
+    Future<int> count(String table) async {
+      try {
+        final r = await db.rawQuery('SELECT COUNT(*) as c FROM $table');
+        return (r.isNotEmpty ? (r.first['c'] as int? ?? 0) : 0);
+      } catch (_) {
+        return 0;
+      }
+    }
+
+    final classes = await count('classes');
+    final students = await count('students');
+    final attendance = await count('attendance');
+    final exams = await count('exams');
+    final grades = await count('grades');
+    final notes = await count('notes');
+    final studentNotes = await count('student_notes');
+
+    return classes > 0 ||
+        students > 0 ||
+        attendance > 0 ||
+        exams > 0 ||
+        grades > 0 ||
+        notes > 0 ||
+        studentNotes > 0;
+  }
 
   Future<Database> get database async {
     if (_database != null && !_forceReinit) return _database!;
@@ -34,6 +66,112 @@ class DatabaseHelper {
     _database = await _initDatabase();
     _forceReinit = false;
     return _database!;
+  }
+
+  Future<bool> _tableExists(Database db, String tableName) async {
+    try {
+      final r = await db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        [tableName],
+      );
+      return r.isNotEmpty;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<int> addCashWithdrawal({
+    required int amount,
+    required String withdrawDate,
+    String? purpose,
+    String? withdrawerName,
+    String? note,
+  }) async {
+    final db = await database;
+    final now = DateTime.now().toIso8601String();
+    return db.insert(
+      'cash_withdrawals',
+      {
+        'amount': amount,
+        'purpose': purpose,
+        'withdrawer_name': withdrawerName,
+        'withdraw_date': withdrawDate,
+        'note': note,
+        'created_at': now,
+        'updated_at': now,
+      },
+      conflictAlgorithm: ConflictAlgorithm.abort,
+    );
+  }
+
+  Future<int> deleteCashWithdrawal(int id) async {
+    final db = await database;
+    return db.delete(
+      'cash_withdrawals',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> getCashWithdrawals() async {
+    final db = await database;
+    return db.query(
+      'cash_withdrawals',
+      orderBy: 'withdraw_date DESC, id DESC',
+    );
+  }
+
+  Future<int> getTotalCashWithdrawalsAmount() async {
+    final db = await database;
+    final r = await db.rawQuery('SELECT COALESCE(SUM(amount), 0) AS t FROM cash_withdrawals');
+    return int.tryParse(r.first['t']?.toString() ?? '') ?? 0;
+  }
+
+  Future<int> addCashIncome({
+    required int amount,
+    required String incomeDate,
+    String? purpose,
+    String? supplierName,
+    String? note,
+  }) async {
+    final db = await database;
+    final now = DateTime.now().toIso8601String();
+    return db.insert(
+      'cash_incomes',
+      {
+        'amount': amount,
+        'purpose': purpose,
+        'supplier_name': supplierName,
+        'income_date': incomeDate,
+        'note': note,
+        'created_at': now,
+        'updated_at': now,
+      },
+      conflictAlgorithm: ConflictAlgorithm.abort,
+    );
+  }
+
+  Future<int> deleteCashIncome(int id) async {
+    final db = await database;
+    return db.delete(
+      'cash_incomes',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> getCashIncomes() async {
+    final db = await database;
+    return db.query(
+      'cash_incomes',
+      orderBy: 'income_date DESC, id DESC',
+    );
+  }
+
+  Future<int> getTotalCashIncomesAmount() async {
+    final db = await database;
+    final r = await db.rawQuery('SELECT COALESCE(SUM(amount), 0) AS t FROM cash_incomes');
+    return int.tryParse(r.first['t']?.toString() ?? '') ?? 0;
   }
 
   Future<void> _repairSchema(Database db) async {
@@ -163,6 +301,24 @@ class DatabaseHelper {
     return out;
   }
 
+  Future<void> _safeUpsert(
+    Database db, {
+    required String tableName,
+    required Map<String, dynamic> values,
+    required String where,
+    required List<Object?> whereArgs,
+  }) async {
+    final updated = await db.update(
+      tableName,
+      values,
+      where: where,
+      whereArgs: whereArgs,
+    );
+    if (updated == 0) {
+      await db.insert(tableName, values);
+    }
+  }
+
   Future<void> upsertFromCloud({
     required String tableName,
     required String docId,
@@ -186,14 +342,32 @@ class DatabaseHelper {
       case 'student_notes':
       case 'class_course_prices':
       case 'installments':
+      case 'assignments':
         final id = int.tryParse(docId);
         if (id == null) return;
         localId = id.toString();
         values = <String, dynamic>{...data, 'id': id};
         values['created_at'] = (values['created_at'] ?? values['createdAt'] ?? nowIso).toString();
-        if (values.containsKey('updated_at') || values.containsKey('updatedAt')) {
-          values['updated_at'] = (values['updated_at'] ?? values['updatedAt'] ?? nowIso).toString();
-        }
+        // تأكد من وجود updated_at دائماً
+        values['updated_at'] = (values['updated_at'] ?? values['updatedAt'] ?? nowIso).toString();
+        break;
+
+      case 'assignment_students':
+        // Stored/identified as "{assignmentId}_{studentId}".
+        localId = docId;
+        final parts = docId.split('_');
+        final assignmentId = parts.isNotEmpty ? int.tryParse(parts[0]) : null;
+        final studentId = parts.length > 1 ? int.tryParse(parts[1]) : null;
+        if (assignmentId == null || studentId == null) return;
+
+        values = <String, dynamic>{
+          ...data,
+          // Ensure required composite keys exist.
+          'assignment_id': data['assignment_id'] ?? assignmentId,
+          'student_id': data['student_id'] ?? studentId,
+        };
+        values['created_at'] = (values['created_at'] ?? values['createdAt'] ?? nowIso).toString();
+        values['updated_at'] = (values['updated_at'] ?? values['updatedAt'] ?? nowIso).toString();
         break;
 
       case 'courses':
@@ -229,11 +403,51 @@ class DatabaseHelper {
         return;
     }
 
-    await db.insert(
-      tableName,
-      values,
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    try {
+      if (tableName == 'settings') {
+        await _safeUpsert(
+          db,
+          tableName: tableName,
+          values: values,
+          where: 'key = ?',
+          whereArgs: [values['key']],
+        );
+      } else if (tableName == 'course_due_dates') {
+        await _safeUpsert(
+          db,
+          tableName: tableName,
+          values: values,
+          where: 'class_id = ? AND course_id = ?',
+          whereArgs: [values['class_id'], values['course_id']],
+        );
+      } else if (tableName == 'assignment_students') {
+        // Remove 'id' from values to avoid datatype mismatch; assignment_students uses composite key only
+        final valuesWithoutId = Map<String, dynamic>.from(values);
+        valuesWithoutId.remove('id');
+        await _safeUpsert(
+          db,
+          tableName: tableName,
+          values: valuesWithoutId,
+          where: 'assignment_id = ? AND student_id = ?',
+          whereArgs: [valuesWithoutId['assignment_id'], valuesWithoutId['student_id']],
+        );
+      } else {
+        await _safeUpsert(
+          db,
+          tableName: tableName,
+          values: values,
+          where: 'id = ?',
+          whereArgs: [values['id']],
+        );
+      }
+    } catch (e) {
+      // Ignore foreign key constraint failures during cloud sync
+      if (e.toString().contains('FOREIGN KEY constraint failed')) {
+        print('⚠️ Skipping sync for $tableName due to missing parent (docId: $docId)');
+        return;
+      }
+      rethrow;
+    }
 
     await db.insert(
       'sync_meta',
@@ -252,14 +466,27 @@ class DatabaseHelper {
   }
 
   Future<void> wipeLocalAppDataPreservingSync() async {
+    print('⚠️ wipeLocalAppDataPreservingSync called');
+    print(StackTrace.current);
     final db = await database;
+    final hasMessages = await _tableExists(db, 'messages');
     await db.transaction((txn) async {
       // Delete children before parents to respect foreign keys.
       await txn.delete('attendance');
       await txn.delete('grades');
+      try {
+        await txn.delete('assignment_students');
+      } catch (_) {}
+      try {
+        await txn.delete('assignments');
+      } catch (_) {}
       await txn.delete('student_notes');
       await txn.delete('notes');
-      await txn.delete('messages');
+      if (hasMessages) {
+        try {
+          await txn.delete('messages');
+        } catch (_) {}
+      }
       await txn.delete('exams');
       await txn.delete('lectures');
 
@@ -303,74 +530,11 @@ class DatabaseHelper {
   }
 
   Future<void> upsertClassFromCloud(String cloudId, Map<String, dynamic> cloudData) async {
-    final db = await database;
-    final id = int.tryParse(cloudId);
-    if (id == null) return;
-
-    final nowIso = DateTime.now().toIso8601String();
-    final values = <String, dynamic>{
-      'id': id,
-      'name': cloudData['name'],
-      'subject': cloudData['subject'],
-      'year': cloudData['year'],
-      'description': cloudData['description'],
-      'created_at': (cloudData['created_at'] ?? cloudData['createdAt'] ?? nowIso).toString(),
-      'updated_at': (cloudData['updated_at'] ?? cloudData['updatedAt'] ?? nowIso).toString(),
-    };
-
-    await db.insert(
-      'classes',
-      values,
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
-
-    await db.insert(
-      'sync_meta',
-      {
-        'table_name': 'classes',
-        'local_id': id.toString(),
-        'cloud_id': cloudId,
-        'server_updated_at': (cloudData['updated_at'] ?? cloudData['updatedAt'])?.toString(),
-        'local_updated_at': nowIso,
-        'is_deleted': 0,
-        'created_at': nowIso,
-        'updated_at': nowIso,
-      },
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    await upsertFromCloud(tableName: 'classes', docId: cloudId, cloudData: cloudData);
   }
 
   Future<void> upsertStudentFromCloud(String cloudId, Map<String, dynamic> cloudData) async {
-    final db = await database;
-    final id = int.tryParse(cloudId);
-    if (id == null) return;
-
-    final nowIso = DateTime.now().toIso8601String();
-    final values = Map<String, dynamic>.from(cloudData);
-    values['id'] = id;
-    values['created_at'] = (cloudData['created_at'] ?? cloudData['createdAt'] ?? nowIso).toString();
-    values['updated_at'] = (cloudData['updated_at'] ?? cloudData['updatedAt'] ?? nowIso).toString();
-
-    await db.insert(
-      'students',
-      values,
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
-
-    await db.insert(
-      'sync_meta',
-      {
-        'table_name': 'students',
-        'local_id': id.toString(),
-        'cloud_id': cloudId,
-        'server_updated_at': (cloudData['updated_at'] ?? cloudData['updatedAt'])?.toString(),
-        'local_updated_at': nowIso,
-        'is_deleted': 0,
-        'created_at': nowIso,
-        'updated_at': nowIso,
-      },
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    await upsertFromCloud(tableName: 'students', docId: cloudId, cloudData: cloudData);
   }
 
   // إجبار إعادة تهيئة قاعدة البيانات
@@ -381,6 +545,8 @@ class DatabaseHelper {
 
   Future<void> resetDatabaseFile() async {
     try {
+      print('⚠️ resetDatabaseFile called');
+      print(StackTrace.current);
       if (_database != null) {
         await _database!.close();
         _database = null;
@@ -446,16 +612,8 @@ class DatabaseHelper {
           print('🔒 File permissions: ${stat.modeString()}');
           
         } catch (e) {
-          print('❌ Cannot write to database file: $e');
-          // محاولة حذف الملف القديم وإنشاء واحد جديد
-          try {
-            await dbFile.delete();
-            print('🗑️ Deleted existing database file');
-            isNewDb = true;
-          } catch (deleteError) {
-            print('❌ Failed to delete database file: $deleteError');
-            rethrow;
-          }
+          print('❌ Cannot write to database file (will NOT delete): $e');
+          print(StackTrace.current);
         }
       }
       
@@ -524,7 +682,7 @@ class DatabaseHelper {
     await db.execute('''
       CREATE TABLE students (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        class_id INTEGER NOT NULL,
+        class_id INTEGER,
         name TEXT NOT NULL,
         photo TEXT,
         photo_path TEXT,
@@ -548,7 +706,7 @@ class DatabaseHelper {
         missing_count INTEGER DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
-        FOREIGN KEY (class_id) REFERENCES classes (id) ON DELETE CASCADE
+        FOREIGN KEY (class_id) REFERENCES classes (id) ON DELETE SET NULL
       )
     ''');
 
@@ -562,6 +720,7 @@ class DatabaseHelper {
         status INTEGER NOT NULL,
         notes TEXT,
         created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
         FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE,
         FOREIGN KEY (lecture_id) REFERENCES lectures (id) ON DELETE CASCADE,
         UNIQUE(student_id, lecture_id)
@@ -592,6 +751,12 @@ class DatabaseHelper {
         value TEXT NOT NULL
       )
     ''');
+
+    await db.insert(
+      'settings',
+      {'key': 'tuition_receipt_seq', 'value': '0'},
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
 
     // إنشاء جدول المحاضرات
     await db.execute('''
@@ -736,6 +901,130 @@ class DatabaseHelper {
       )
     ''');
 
+    await db.execute('''
+      CREATE TABLE class_tuition_plans (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        class_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        total_amount INTEGER NOT NULL,
+        installments_count INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (class_id) REFERENCES classes (id) ON DELETE CASCADE
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE tuition_plan_installments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        plan_id INTEGER NOT NULL,
+        installment_no INTEGER NOT NULL,
+        amount INTEGER NOT NULL,
+        due_date TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (plan_id) REFERENCES class_tuition_plans (id) ON DELETE CASCADE,
+        UNIQUE(plan_id, installment_no)
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE student_tuition_overrides (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_id INTEGER NOT NULL,
+        plan_id INTEGER NOT NULL,
+        installment_no INTEGER NOT NULL,
+        amount INTEGER NOT NULL,
+        due_date TEXT NOT NULL,
+        reason TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE,
+        FOREIGN KEY (plan_id) REFERENCES class_tuition_plans (id) ON DELETE CASCADE,
+        UNIQUE(student_id, plan_id, installment_no)
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE student_plan_discount_reasons (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_id INTEGER NOT NULL,
+        plan_id INTEGER NOT NULL,
+        reason TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE,
+        FOREIGN KEY (plan_id) REFERENCES class_tuition_plans (id) ON DELETE CASCADE,
+        UNIQUE(student_id, plan_id)
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE student_financial_notes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_id INTEGER NOT NULL,
+        plan_id INTEGER,
+        note TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE,
+        FOREIGN KEY (plan_id) REFERENCES class_tuition_plans (id) ON DELETE SET NULL
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE tuition_payments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        receipt_no INTEGER NOT NULL,
+        student_id INTEGER NOT NULL,
+        plan_id INTEGER NOT NULL,
+        installment_no INTEGER NOT NULL,
+        due_amount INTEGER NOT NULL,
+        paid_amount INTEGER NOT NULL,
+        payment_date TEXT NOT NULL,
+        notes TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE,
+        FOREIGN KEY (plan_id) REFERENCES class_tuition_plans (id) ON DELETE CASCADE,
+        UNIQUE(receipt_no)
+      )
+    ''');
+
+    // إنشاء جدول الواجبات
+    await db.execute('''
+      CREATE TABLE assignments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        class_id INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        due_date TEXT NOT NULL,
+        required_count INTEGER,
+        reason TEXT,
+        scope TEXT NOT NULL DEFAULT 'all',
+        assigned_student_ids_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (class_id) REFERENCES classes (id) ON DELETE CASCADE
+      )
+    ''');
+
+    // إنشاء جدول حالة الواجب لكل طالب
+    await db.execute('''
+      CREATE TABLE assignment_students (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        assignment_id INTEGER NOT NULL,
+        student_id INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        done_count INTEGER NOT NULL DEFAULT 0,
+        comment TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (assignment_id) REFERENCES assignments (id) ON DELETE CASCADE,
+        FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE,
+        UNIQUE(assignment_id, student_id)
+      )
+    ''');
+
     // إنشاء فهارس لتحسين الأداء
     await db.execute('CREATE INDEX idx_notes_class_id ON notes(class_id)');
     await db.execute('CREATE INDEX idx_notes_item ON notes(item_type, item_id)');
@@ -759,6 +1048,20 @@ class DatabaseHelper {
     await db.execute('CREATE INDEX idx_course_due_dates_class_id ON course_due_dates(class_id)');
     await db.execute('CREATE INDEX idx_course_due_dates_course_id ON course_due_dates(course_id)');
     await db.execute('CREATE INDEX idx_users_email ON users(email)');
+
+    await db.execute('CREATE INDEX idx_class_tuition_plans_class_id ON class_tuition_plans(class_id)');
+    await db.execute('CREATE INDEX idx_tuition_plan_installments_plan_id ON tuition_plan_installments(plan_id)');
+    await db.execute('CREATE INDEX idx_student_tuition_overrides_student_id ON student_tuition_overrides(student_id)');
+    await db.execute('CREATE INDEX idx_student_tuition_overrides_plan_id ON student_tuition_overrides(plan_id)');
+    await db.execute('CREATE INDEX idx_tuition_payments_student_id ON tuition_payments(student_id)');
+    await db.execute('CREATE INDEX idx_tuition_payments_plan_id ON tuition_payments(plan_id)');
+    await db.execute('CREATE INDEX idx_tuition_payments_installment_no ON tuition_payments(installment_no)');
+    await db.execute('CREATE INDEX idx_tuition_payments_payment_date ON tuition_payments(payment_date)');
+
+    await db.execute('CREATE INDEX idx_assignments_class_id ON assignments(class_id)');
+    await db.execute('CREATE INDEX idx_assignments_due_date ON assignments(due_date)');
+    await db.execute('CREATE INDEX idx_assignment_students_assignment_id ON assignment_students(assignment_id)');
+    await db.execute('CREATE INDEX idx_assignment_students_student_id ON assignment_students(student_id)');
 
     await db.execute('''
       CREATE TABLE sync_meta (
@@ -961,6 +1264,48 @@ class DatabaseHelper {
     print('✅ Database upgraded to version 8: student_notes table added');
   }
 
+    if (oldVersion < 26) {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS cash_withdrawals (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          amount INTEGER NOT NULL,
+          purpose TEXT,
+          withdrawer_name TEXT,
+          withdraw_date TEXT NOT NULL,
+          note TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+      ''');
+      await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_cash_withdrawals_date ON cash_withdrawals(withdraw_date)',
+      );
+      await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_cash_withdrawals_withdrawer ON cash_withdrawals(withdrawer_name)',
+      );
+
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS cash_incomes (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          amount INTEGER NOT NULL,
+          purpose TEXT,
+          supplier_name TEXT,
+          income_date TEXT NOT NULL,
+          note TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+      ''');
+      await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_cash_incomes_date ON cash_incomes(income_date)',
+      );
+      await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_cash_incomes_supplier ON cash_incomes(supplier_name)',
+      );
+
+      print('✅ Database upgraded to version 26: cash_withdrawals & cash_incomes tables added');
+    }
+
     if (oldVersion < 15) {
       final nowIso = DateTime.now().toIso8601String();
 
@@ -1139,6 +1484,687 @@ class DatabaseHelper {
         print('⚠️ photo_path column already exists or failed to add in version 14: $e');
       }
     }
+    
+    if (oldVersion < 18) {
+      // الإصدار 18: إضافة حقل updated_at لجدول attendance
+      try {
+        final columns = await db.rawQuery('PRAGMA table_info(attendance)');
+        final columnNames = columns.map((col) => col['name'].toString().toLowerCase()).toList();
+        
+        if (!columnNames.contains('updated_at')) {
+          // أولاً أضيف العمود مع قيمة افتراضية
+          await db.execute('ALTER TABLE attendance ADD COLUMN updated_at TEXT');
+          
+          // ثم حدث جميع السجلات الموجودة بقيمة افتراضية
+          await db.execute('UPDATE attendance SET updated_at = created_at WHERE updated_at IS NULL');
+          
+          print('✅ Database upgraded to version 18: updated_at column added to attendance table');
+        } else {
+          print('✅ updated_at column already exists in version 18');
+        }
+      } catch (e) {
+        print('⚠️ updated_at column already exists or failed to add in version 18: $e');
+      }
+    }
+
+    if (oldVersion < 19) {
+      // الإصدار 19: إضافة جدول messages إذا لم يكن موجوداً
+      try {
+        final tables = await db.rawQuery(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'",
+        );
+        if (tables.isEmpty) {
+          await db.execute('''
+            CREATE TABLE messages (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              student_id INTEGER NOT NULL,
+              class_id INTEGER NOT NULL,
+              title TEXT NOT NULL,
+              content TEXT NOT NULL,
+              attached_file TEXT NOT NULL,
+              send_methods TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              is_sent INTEGER NOT NULL DEFAULT 0,
+              sent_at TEXT,
+              FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE,
+              FOREIGN KEY (class_id) REFERENCES classes (id) ON DELETE CASCADE
+            )
+          ''');
+          await db.execute('CREATE INDEX IF NOT EXISTS idx_messages_student_id ON messages(student_id)');
+          await db.execute('CREATE INDEX IF NOT EXISTS idx_messages_class_id ON messages(class_id)');
+          await db.execute('CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at)');
+          print('✅ Database upgraded to version 19: messages table added');
+        }
+      } catch (e) {
+        print('⚠️ messages table creation failed in version 19: $e');
+      }
+    }
+
+    if (oldVersion < 20) {
+      // الإصدار 20: إصلاح ON DELETE CASCADE في جدول students
+      try {
+        // نسخ البيانات الحالية
+        final studentsData = await db.query('students');
+        
+        // حذف الجدول القديم
+        await db.execute('DROP TABLE IF EXISTS students');
+        
+        // إنشاء الجدول الجديد بدون CASCADE
+        await db.execute('''
+          CREATE TABLE students (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            class_id INTEGER,
+            name TEXT NOT NULL,
+            photo TEXT,
+            photo_path TEXT,
+            notes TEXT,
+            parent_phone TEXT,
+            parent_email TEXT,
+            student_id TEXT,
+            email TEXT,
+            phone TEXT,
+            location TEXT,
+            birth_date TEXT,
+            primary_guardian TEXT,
+            secondary_guardian TEXT,
+            average_grade REAL,
+            attended_lectures INTEGER,
+            absent_lectures INTEGER,
+            absence_percentage REAL,
+            attended_exams INTEGER,
+            absent_exams INTEGER,
+            cheating_count INTEGER DEFAULT 0,
+            missing_count INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (class_id) REFERENCES classes (id) ON DELETE SET NULL
+          )
+        ''');
+        
+        // استعادة البيانات
+        for (final student in studentsData) {
+          await db.insert('students', student);
+        }
+        
+        print('✅ Database upgraded to version 20: Fixed students table foreign key');
+      } catch (e) {
+        print('⚠️ Failed to upgrade students table in version 20: $e');
+      }
+    }
+
+    if (oldVersion < 21) {
+      // الإصدار 21: جعل class_id إلزامي + تفعيل ON DELETE CASCADE لجدول students
+      try {
+        // IMPORTANT:
+        // - نغلق foreign keys مؤقتاً حتى لا يفشل DROP/CREATE.
+        // - ننظف سجلات الجداول التابعة للطلاب اليتامى (class_id IS NULL) حتى لا تبقى Orphans.
+        await db.execute('PRAGMA foreign_keys = OFF');
+
+        final orphanRows = await db.query('students', columns: ['id'], where: 'class_id IS NULL');
+        final orphanIds = <int>[];
+        for (final r in orphanRows) {
+          final v = r['id'];
+          if (v is int) orphanIds.add(v);
+        }
+
+        for (final sid in orphanIds) {
+          try {
+            await db.delete('attendance', where: 'student_id = ?', whereArgs: [sid]);
+          } catch (_) {}
+          try {
+            await db.delete('grades', where: 'student_id = ?', whereArgs: [sid]);
+          } catch (_) {}
+          try {
+            await db.delete('student_notes', where: 'student_id = ?', whereArgs: [sid]);
+          } catch (_) {}
+          try {
+            if (await _tableExists(db, 'messages')) {
+              await db.delete('messages', where: 'student_id = ?', whereArgs: [sid]);
+            }
+          } catch (_) {}
+        }
+
+        // احذف الطلاب اليتامى الذين ليس لديهم class_id لأن الإصدار الجديد سيجعل الحقل NOT NULL.
+        try {
+          await db.delete('students', where: 'class_id IS NULL');
+        } catch (_) {}
+
+        final studentsData = await db.query('students');
+
+        await db.execute('DROP TABLE IF EXISTS students');
+
+        await db.execute('''
+          CREATE TABLE students (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            class_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            photo TEXT,
+            photo_path TEXT,
+            notes TEXT,
+            parent_phone TEXT,
+            parent_email TEXT,
+            student_id TEXT,
+            email TEXT,
+            phone TEXT,
+            location TEXT,
+            birth_date TEXT,
+            primary_guardian TEXT,
+            secondary_guardian TEXT,
+            average_grade REAL,
+            attended_lectures INTEGER,
+            absent_lectures INTEGER,
+            absence_percentage REAL,
+            attended_exams INTEGER,
+            absent_exams INTEGER,
+            cheating_count INTEGER DEFAULT 0,
+            missing_count INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (class_id) REFERENCES classes (id) ON DELETE CASCADE
+          )
+        ''');
+
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_students_class_id ON students(class_id)');
+
+        for (final student in studentsData) {
+          final classId = student['class_id'];
+          if (classId == null) continue;
+          final s = Map<String, Object?>.from(student);
+
+          // Legacy rows may miss timestamps; v21 schema makes them NOT NULL.
+          final nowIso = DateTime.now().toIso8601String();
+          final createdAt = (s['created_at']?.toString().trim().isNotEmpty ?? false)
+              ? s['created_at']
+              : null;
+          final updatedAt = (s['updated_at']?.toString().trim().isNotEmpty ?? false)
+              ? s['updated_at']
+              : null;
+
+          s['created_at'] = createdAt ?? updatedAt ?? nowIso;
+          s['updated_at'] = updatedAt ?? createdAt ?? nowIso;
+
+          await db.insert('students', s);
+        }
+
+        await db.execute('PRAGMA foreign_keys = ON');
+
+        print('✅ Database upgraded to version 21: students.class_id NOT NULL + ON DELETE CASCADE');
+      } catch (e) {
+        try {
+          await db.execute('PRAGMA foreign_keys = ON');
+        } catch (_) {}
+        print('⚠️ Failed to upgrade students table in version 21: $e');
+      }
+    }
+
+    if (oldVersion < 22) {
+      // الإصدار 22: إضافة جداول الواجبات
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS assignments (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          class_id INTEGER NOT NULL,
+          title TEXT NOT NULL,
+          due_date TEXT NOT NULL,
+          required_count INTEGER,
+          reason TEXT,
+          scope TEXT NOT NULL DEFAULT 'all',
+          assigned_student_ids_json TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (class_id) REFERENCES classes (id) ON DELETE CASCADE
+        )
+      ''');
+
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS assignment_students (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          assignment_id INTEGER NOT NULL,
+          student_id INTEGER NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending',
+          done_count INTEGER NOT NULL DEFAULT 0,
+          comment TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (assignment_id) REFERENCES assignments (id) ON DELETE CASCADE,
+          FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE,
+          UNIQUE(assignment_id, student_id)
+        )
+      ''');
+
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_assignments_class_id ON assignments(class_id)');
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_assignments_due_date ON assignments(due_date)');
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_assignment_students_assignment_id ON assignment_students(assignment_id)');
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_assignment_students_student_id ON assignment_students(student_id)');
+
+      print('✅ Database upgraded to version 22: assignments tables added');
+    }
+
+    if (oldVersion < 23) {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS class_tuition_plans (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          class_id INTEGER NOT NULL,
+          name TEXT NOT NULL,
+          total_amount INTEGER NOT NULL,
+          installments_count INTEGER NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (class_id) REFERENCES classes (id) ON DELETE CASCADE
+        )
+      ''');
+
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS tuition_plan_installments (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          plan_id INTEGER NOT NULL,
+          installment_no INTEGER NOT NULL,
+          amount INTEGER NOT NULL,
+          due_date TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (plan_id) REFERENCES class_tuition_plans (id) ON DELETE CASCADE,
+          UNIQUE(plan_id, installment_no)
+        )
+      ''');
+
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS student_tuition_overrides (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          student_id INTEGER NOT NULL,
+          plan_id INTEGER NOT NULL,
+          installment_no INTEGER NOT NULL,
+          amount INTEGER NOT NULL,
+          due_date TEXT NOT NULL,
+          reason TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE,
+          FOREIGN KEY (plan_id) REFERENCES class_tuition_plans (id) ON DELETE CASCADE,
+          UNIQUE(student_id, plan_id, installment_no)
+        )
+      ''');
+
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS student_plan_discount_reasons (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          student_id INTEGER NOT NULL,
+          plan_id INTEGER NOT NULL,
+          reason TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE,
+          FOREIGN KEY (plan_id) REFERENCES class_tuition_plans (id) ON DELETE CASCADE,
+          UNIQUE(student_id, plan_id)
+        )
+      ''');
+
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS student_financial_notes (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          student_id INTEGER NOT NULL,
+          plan_id INTEGER,
+          note TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE,
+          FOREIGN KEY (plan_id) REFERENCES class_tuition_plans (id) ON DELETE SET NULL
+        )
+      ''');
+
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS tuition_payments (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          receipt_no INTEGER NOT NULL,
+          student_id INTEGER NOT NULL,
+          plan_id INTEGER NOT NULL,
+          installment_no INTEGER NOT NULL,
+          due_amount INTEGER NOT NULL,
+          paid_amount INTEGER NOT NULL,
+          payment_date TEXT NOT NULL,
+          notes TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE,
+          FOREIGN KEY (plan_id) REFERENCES class_tuition_plans (id) ON DELETE CASCADE,
+          UNIQUE(receipt_no)
+        )
+      ''');
+
+      try {
+        await db.insert(
+          'settings',
+          {'key': 'tuition_receipt_seq', 'value': '0'},
+          conflictAlgorithm: ConflictAlgorithm.ignore,
+        );
+      } catch (_) {
+        // ignore
+      }
+
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_class_tuition_plans_class_id ON class_tuition_plans(class_id)');
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_tuition_plan_installments_plan_id ON tuition_plan_installments(plan_id)');
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_student_tuition_overrides_student_id ON student_tuition_overrides(student_id)');
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_student_tuition_overrides_plan_id ON student_tuition_overrides(plan_id)');
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_student_plan_discount_reasons_student_id ON student_plan_discount_reasons(student_id)');
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_student_plan_discount_reasons_plan_id ON student_plan_discount_reasons(plan_id)');
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_student_financial_notes_student_id ON student_financial_notes(student_id)');
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_student_financial_notes_plan_id ON student_financial_notes(plan_id)');
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_tuition_payments_student_id ON tuition_payments(student_id)');
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_tuition_payments_plan_id ON tuition_payments(plan_id)');
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_tuition_payments_installment_no ON tuition_payments(installment_no)');
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_tuition_payments_payment_date ON tuition_payments(payment_date)');
+
+      print('✅ Database upgraded to version 23: tuition plans tables added');
+    }
+
+    if (oldVersion < 24) {
+      try {
+        await db.execute('ALTER TABLE student_tuition_overrides ADD COLUMN reason TEXT');
+      } catch (_) {
+        // ignore (column may already exist)
+      }
+      print('✅ Database upgraded to version 24: student tuition override reason added');
+    }
+
+    if (oldVersion < 25) {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS student_plan_discount_reasons (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          student_id INTEGER NOT NULL,
+          plan_id INTEGER NOT NULL,
+          reason TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE,
+          FOREIGN KEY (plan_id) REFERENCES class_tuition_plans (id) ON DELETE CASCADE,
+          UNIQUE(student_id, plan_id)
+        )
+      ''');
+
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS student_financial_notes (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          student_id INTEGER NOT NULL,
+          plan_id INTEGER,
+          note TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE,
+          FOREIGN KEY (plan_id) REFERENCES class_tuition_plans (id) ON DELETE SET NULL
+        )
+      ''');
+
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_student_plan_discount_reasons_student_id ON student_plan_discount_reasons(student_id)');
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_student_plan_discount_reasons_plan_id ON student_plan_discount_reasons(plan_id)');
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_student_financial_notes_student_id ON student_financial_notes(student_id)');
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_student_financial_notes_plan_id ON student_financial_notes(plan_id)');
+
+      try {
+        final nowIso = DateTime.now().toIso8601String();
+        final rows = await db.rawQuery(
+          '''
+          SELECT student_id, plan_id, reason, MAX(updated_at) AS max_updated
+          FROM student_tuition_overrides
+          WHERE reason IS NOT NULL AND TRIM(reason) <> ''
+          GROUP BY student_id, plan_id
+          ''',
+        );
+        for (final r in rows) {
+          final sid = r['student_id'];
+          final pid = r['plan_id'];
+          final reason = r['reason']?.toString();
+          final sidInt = (sid is int) ? sid : int.tryParse(sid?.toString() ?? '');
+          final pidInt = (pid is int) ? pid : int.tryParse(pid?.toString() ?? '');
+          if (sidInt == null || pidInt == null) continue;
+          if (reason == null || reason.trim().isEmpty) continue;
+          await db.insert(
+            'student_plan_discount_reasons',
+            {
+              'student_id': sidInt,
+              'plan_id': pidInt,
+              'reason': reason.trim(),
+              'created_at': nowIso,
+              'updated_at': nowIso,
+            },
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+        }
+      } catch (_) {
+        // ignore
+      }
+
+      print('✅ Database upgraded to version 25: per-plan discount reasons + financial notes added');
+    }
+  }
+
+  Future<String?> getStudentPlanDiscountReason({
+    required int studentId,
+    required int planId,
+  }) async {
+    final db = await database;
+    final rows = await db.query(
+      'student_plan_discount_reasons',
+      columns: ['reason'],
+      where: 'student_id = ? AND plan_id = ?',
+      whereArgs: [studentId, planId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    final r = rows.first['reason']?.toString();
+    if (r == null) return null;
+    final t = r.trim();
+    return t.isEmpty ? null : t;
+  }
+
+  Future<void> upsertStudentPlanDiscountReason({
+    required int studentId,
+    required int planId,
+    String? reason,
+  }) async {
+    final db = await database;
+    final nowIso = DateTime.now().toIso8601String();
+    final trimmed = reason?.trim();
+
+    if (trimmed == null || trimmed.isEmpty) {
+      await db.delete(
+        'student_plan_discount_reasons',
+        where: 'student_id = ? AND plan_id = ?',
+        whereArgs: [studentId, planId],
+      );
+      return;
+    }
+
+    await db.insert(
+      'student_plan_discount_reasons',
+      {
+        'student_id': studentId,
+        'plan_id': planId,
+        'reason': trimmed,
+        'created_at': nowIso,
+        'updated_at': nowIso,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<int> addStudentFinancialNote({
+    required int studentId,
+    int? planId,
+    required String note,
+  }) async {
+    final db = await database;
+    final nowIso = DateTime.now().toIso8601String();
+    final id = await db.insert(
+      'student_financial_notes',
+      {
+        'student_id': studentId,
+        'plan_id': planId,
+        'note': note,
+        'created_at': nowIso,
+        'updated_at': nowIso,
+      },
+    );
+    return id;
+  }
+
+  Future<List<Map<String, dynamic>>> getStudentFinancialNotes({
+    required int studentId,
+    int? planId,
+  }) async {
+    final db = await database;
+    final where = <String>['student_id = ?'];
+    final args = <Object?>[studentId];
+    if (planId != null) {
+      where.add('plan_id = ?');
+      args.add(planId);
+    }
+    return await db.query(
+      'student_financial_notes',
+      where: where.join(' AND '),
+      whereArgs: args,
+      orderBy: 'created_at DESC, id DESC',
+    );
+  }
+
+  Future<Map<int, String>> getStudentPlanDiscountReasonsMap({
+    required int planId,
+    required List<int> studentIds,
+  }) async {
+    final db = await database;
+    if (studentIds.isEmpty) return {};
+    final placeholders = List.filled(studentIds.length, '?').join(',');
+    final rows = await db.rawQuery(
+      'SELECT student_id, reason FROM student_plan_discount_reasons '
+      'WHERE plan_id = ? AND student_id IN ($placeholders)',
+      [planId, ...studentIds],
+    );
+    final map = <int, String>{};
+    for (final r in rows) {
+      final sid = (r['student_id'] is int) ? (r['student_id'] as int) : int.tryParse(r['student_id']?.toString() ?? '');
+      if (sid == null) continue;
+      map[sid] = r['reason']?.toString() ?? '';
+    }
+    return map;
+  }
+
+  Future<Map<int, String>> getLatestStudentFinancialNotesMap({
+    required int planId,
+    required List<int> studentIds,
+  }) async {
+    final db = await database;
+    if (studentIds.isEmpty) return {};
+    final placeholders = List.filled(studentIds.length, '?').join(',');
+    final rows = await db.rawQuery(
+      'SELECT student_id, note, created_at, id FROM student_financial_notes '
+      'WHERE plan_id = ? AND student_id IN ($placeholders) '
+      'ORDER BY created_at DESC, id DESC',
+      [planId, ...studentIds],
+    );
+    final map = <int, String>{};
+    for (final r in rows) {
+      final sid = (r['student_id'] is int) ? (r['student_id'] as int) : int.tryParse(r['student_id']?.toString() ?? '');
+      if (sid == null) continue;
+      if (map.containsKey(sid)) continue;
+      map[sid] = r['note']?.toString() ?? '';
+    }
+    return map;
+  }
+
+  Future<Map<int, Map<int, int>>> getTuitionPaidTotalsByStudentInstallment({
+    required int planId,
+    required List<int> studentIds,
+  }) async {
+    final db = await database;
+    if (studentIds.isEmpty) return {};
+    final placeholders = List.filled(studentIds.length, '?').join(',');
+    final rows = await db.rawQuery(
+      'SELECT student_id, installment_no, SUM(paid_amount) AS paid_sum '
+      'FROM tuition_payments '
+      'WHERE plan_id = ? AND student_id IN ($placeholders) '
+      'GROUP BY student_id, installment_no',
+      [planId, ...studentIds],
+    );
+    final result = <int, Map<int, int>>{};
+    for (final r in rows) {
+      final sid = (r['student_id'] is int) ? (r['student_id'] as int) : int.tryParse(r['student_id']?.toString() ?? '');
+      final ino = (r['installment_no'] is int) ? (r['installment_no'] as int) : int.tryParse(r['installment_no']?.toString() ?? '');
+      if (sid == null || ino == null) continue;
+      final paid = (r['paid_sum'] is num) ? (r['paid_sum'] as num).toInt() : int.tryParse(r['paid_sum']?.toString() ?? '') ?? 0;
+      final byInst = result.putIfAbsent(sid, () => <int, int>{});
+      byInst[ino] = paid;
+    }
+    return result;
+  }
+
+  Future<List<Map<String, dynamic>>> getLateTuitionInstallmentsBatch({
+    required int planId,
+    required List<int> studentIds,
+  }) async {
+    final db = await database;
+    if (studentIds.isEmpty) return [];
+
+    final placeholders = List.filled(studentIds.length, '?').join(',');
+
+    // ملاحظة: نستخدم date('now') لتجاهل الوقت وإبقاء المقارنة حسب اليوم
+    // بعض البيانات قد تُخزَّن بصيغة YYYY/MM/DD؛ لذلك نطبّعها إلى YYYY-MM-DD عبر replace قبل date/julianday.
+    final rows = await db.rawQuery(
+      'SELECT s.student_id AS student_id, '
+      't.installment_no AS installment_no, '
+      'COALESCE(o.due_date, t.due_date) AS due_date, '
+      'COALESCE(o.amount, t.amount) AS due_amount, '
+      'COALESCE(p.paid_sum, 0) AS paid_amount, '
+      '(COALESCE(o.amount, t.amount) - COALESCE(p.paid_sum, 0)) AS remaining_amount, '
+      'CAST((julianday(date(\'now\')) - julianday(date(replace(COALESCE(o.due_date, t.due_date), \"/\", \"-\")))) AS INTEGER) AS days_late '
+      'FROM tuition_plan_installments t '
+      'CROSS JOIN (SELECT id AS student_id FROM students WHERE id IN ($placeholders)) s '
+      'LEFT JOIN student_tuition_overrides o '
+      '  ON o.plan_id = t.plan_id AND o.student_id = s.student_id AND o.installment_no = t.installment_no '
+      'LEFT JOIN ( '
+      '  SELECT student_id, installment_no, SUM(paid_amount) AS paid_sum '
+      '  FROM tuition_payments '
+      '  WHERE plan_id = ? AND student_id IN ($placeholders) '
+      '  GROUP BY student_id, installment_no '
+      ') p '
+      '  ON p.student_id = s.student_id AND p.installment_no = t.installment_no '
+      'WHERE t.plan_id = ? '
+      '  AND date(replace(COALESCE(o.due_date, t.due_date), \"/\", \"-\")) < date(\'now\') '
+      '  AND (COALESCE(o.amount, t.amount) - COALESCE(p.paid_sum, 0)) > 0 '
+      'ORDER BY s.student_id ASC, t.installment_no ASC',
+      [
+        ...studentIds,
+        planId,
+        ...studentIds,
+        planId,
+      ],
+    );
+
+    return rows;
+  }
+
+  Future<void> updateStudentFinancialNote({
+    required int noteId,
+    required String note,
+  }) async {
+    final db = await database;
+    await db.update(
+      'student_financial_notes',
+      {
+        'note': note,
+        'updated_at': DateTime.now().toIso8601String(),
+      },
+      where: 'id = ?',
+      whereArgs: [noteId],
+    );
+  }
+
+  Future<void> deleteStudentFinancialNote({
+    required int noteId,
+  }) async {
+    final db = await database;
+    await db.delete(
+      'student_financial_notes',
+      where: 'id = ?',
+      whereArgs: [noteId],
+    );
   }
 
   // عمليات الفصول
@@ -1154,6 +2180,10 @@ class DatabaseHelper {
         'id': id,
       },
     );
+    
+    // تحقق تلقائي بعد الإضافة - معطل مؤقتًا
+    // await _validateDatabaseIntegrity();
+    
     return id;
   }
 
@@ -1193,7 +2223,161 @@ class DatabaseHelper {
         payload: classModel.toMap(),
       );
     }
+    
+    // تحقق تلقائي بعد التحديث - معطل مؤقتًا
+    // await _validateDatabaseIntegrity();
+    
     return result;
+  }
+
+  // عمليات الواجبات
+  Future<int> insertAssignment(AssignmentModel assignment) async {
+    final db = await database;
+    final nowIso = DateTime.now().toIso8601String();
+    final map = assignment.toMap();
+    map['created_at'] = (map['created_at'] ?? nowIso).toString();
+    map['updated_at'] = (map['updated_at'] ?? nowIso).toString();
+    final id = await db.insert('assignments', map);
+
+    await _enqueueSyncOutbox(
+      tableName: 'assignments',
+      localId: id.toString(),
+      op: 'insert',
+      payload: {
+        ...map,
+        'id': id,
+      },
+    );
+
+    return id;
+  }
+
+  Future<List<AssignmentModel>> getAssignmentsByClass(int classId) async {
+    final db = await database;
+    final maps = await db.query(
+      'assignments',
+      where: 'class_id = ?',
+      whereArgs: [classId],
+      orderBy: 'due_date DESC, created_at DESC',
+    );
+    return List.generate(maps.length, (i) => AssignmentModel.fromMap(maps[i]));
+  }
+
+  Future<List<AssignmentStudentModel>> getAssignmentStudentStatusesByClass(int classId) async {
+    final db = await database;
+    final rows = await db.rawQuery(
+      '''
+      SELECT s.*
+      FROM assignment_students s
+      INNER JOIN assignments a ON a.id = s.assignment_id
+      WHERE a.class_id = ?
+      ''',
+      [classId],
+    );
+    return List.generate(rows.length, (i) => AssignmentStudentModel.fromMap(rows[i]));
+  }
+
+  Future<int> updateAssignment(AssignmentModel assignment) async {
+    final db = await database;
+    final nowIso = DateTime.now().toIso8601String();
+    final map = assignment.toMap();
+    map['updated_at'] = nowIso;
+    final result = await db.update(
+      'assignments',
+      map,
+      where: 'id = ?',
+      whereArgs: [assignment.id],
+    );
+
+    if ((assignment.id ?? 0) > 0) {
+      await _enqueueSyncOutbox(
+        tableName: 'assignments',
+        localId: assignment.id.toString(),
+        op: 'update',
+        payload: map,
+      );
+    }
+
+    return result;
+  }
+
+  Future<int> deleteAssignment(int assignmentId) async {
+    final db = await database;
+    List<Map<String, Object?>>? studentRows;
+    try {
+      studentRows = await db.query(
+        'assignment_students',
+        columns: ['student_id'],
+        where: 'assignment_id = ?',
+        whereArgs: [assignmentId],
+      );
+    } catch (_) {
+      studentRows = null;
+    }
+
+    final result = await db.transaction((txn) async {
+      try {
+        await txn.delete(
+          'assignment_students',
+          where: 'assignment_id = ?',
+          whereArgs: [assignmentId],
+        );
+      } catch (_) {}
+
+      return await txn.delete(
+        'assignments',
+        where: 'id = ?',
+        whereArgs: [assignmentId],
+      );
+    });
+
+    await _enqueueSyncOutbox(
+      tableName: 'assignments',
+      localId: assignmentId.toString(),
+      op: 'delete',
+    );
+
+    if (studentRows != null) {
+      for (final r in studentRows) {
+        final sid = r['student_id'];
+        if (sid is int) {
+          await _enqueueSyncOutbox(
+            tableName: 'assignment_students',
+            localId: '${assignmentId}_$sid',
+            op: 'delete',
+          );
+        }
+      }
+    }
+
+    return result;
+  }
+
+  Future<void> upsertAssignmentStudentStatus(AssignmentStudentModel status) async {
+    final db = await database;
+    final nowIso = DateTime.now().toIso8601String();
+    final values = status.toMap();
+    // assignment_students.id is AUTOINCREMENT; never include it in updates/inserts.
+    values.remove('id');
+    values['created_at'] = (values['created_at'] ?? nowIso).toString();
+    values['updated_at'] = nowIso;
+
+    final updated = await db.update(
+      'assignment_students',
+      values,
+      where: 'assignment_id = ? AND student_id = ?',
+      whereArgs: [status.assignmentId, status.studentId],
+    );
+    if (updated == 0) {
+      await db.insert('assignment_students', values);
+    }
+
+    await _enqueueSyncOutbox(
+      tableName: 'assignment_students',
+      localId: '${status.assignmentId}_${status.studentId}',
+      op: 'upsert',
+      payload: values,
+    );
   }
 
   Future<int> deleteClass(int id) async {
@@ -1203,11 +2387,18 @@ class DatabaseHelper {
       where: 'id = ?',
       whereArgs: [id],
     );
-    await _enqueueSyncOutbox(
-      tableName: 'classes',
-      localId: id.toString(),
-      op: 'delete',
-    );
+
+    if (result > 0) {
+      await _enqueueSyncOutbox(
+        tableName: 'classes',
+        localId: id.toString(),
+        op: 'delete',
+      );
+    }
+
+    // تحقق تلقائي بعد الحذف - معطل مؤقتًا
+    // await _validateDatabaseIntegrity();
+
     return result;
   }
 
@@ -1314,6 +2505,7 @@ class DatabaseHelper {
       }
     }
 
+    final hasMessagesTable = await _tableExists(db, 'messages');
     for (final id in studentIds) {
       final attendanceRows = await db.query(
         'attendance',
@@ -1354,16 +2546,22 @@ class DatabaseHelper {
         }
       }
 
-      final messageRows = await db.query(
-        'messages',
-        columns: ['id'],
-        where: 'student_id = ?',
-        whereArgs: [id],
-      );
-      for (final m in messageRows) {
-        final mid = m['id'];
-        if (mid is int) {
-          await _enqueueSyncOutbox(tableName: 'messages', localId: mid.toString(), op: 'delete');
+      if (hasMessagesTable) {
+        try {
+          final messageRows = await db.query(
+            'messages',
+            columns: ['id'],
+            where: 'student_id = ?',
+            whereArgs: [id],
+          );
+          for (final m in messageRows) {
+            final mid = m['id'];
+            if (mid is int) {
+              await _enqueueSyncOutbox(tableName: 'messages', localId: mid.toString(), op: 'delete');
+            }
+          }
+        } catch (e) {
+          print('⚠️ Error deleting class messages: $e');
         }
       }
     }
@@ -1414,7 +2612,11 @@ class DatabaseHelper {
       }
       await txn.delete('student_notes', where: 'class_id = ?', whereArgs: [classId]);
       await txn.delete('notes', where: 'class_id = ?', whereArgs: [classId]);
-      await txn.delete('messages', where: 'class_id = ?', whereArgs: [classId]);
+      if (hasMessagesTable) {
+        try {
+          await txn.delete('messages', where: 'class_id = ?', whereArgs: [classId]);
+        } catch (_) {}
+      }
       await txn.delete('lectures', where: 'class_id = ?', whereArgs: [classId]);
       await txn.delete('exams', where: 'class_id = ?', whereArgs: [classId]);
       await txn.delete('students', where: 'class_id = ?', whereArgs: [classId]);
@@ -1571,6 +2773,11 @@ class DatabaseHelper {
     
     try {
       final attendanceMap = Map<String, dynamic>.from(attendance.toMap())..remove('id');
+      
+      // التأكد من وجود updated_at
+      if (!attendanceMap.containsKey('updated_at')) {
+        attendanceMap['updated_at'] = DateTime.now().toIso8601String();
+      }
 
       // التحقق من وجود سجل حضور لنفس الطالب في نفس المحاضرة
       if (attendance.lectureId != null) {
@@ -2812,6 +4019,504 @@ class DatabaseHelper {
   }
 
   // ============================================
+  // Tuition plans (class-centric finance revamp)
+  // ============================================
+
+  Future<List<Map<String, dynamic>>> getClassTuitionPlans(int classId) async {
+    final db = await database;
+    return await db.query(
+      'class_tuition_plans',
+      where: 'class_id = ?',
+      whereArgs: [classId],
+      orderBy: 'id ASC',
+    );
+  }
+
+  Future<void> deleteTuitionPlanInstallment(int planId, int installmentNo) async {
+    final db = await database;
+    await db.delete(
+      'tuition_plan_installments',
+      where: 'plan_id = ? AND installment_no = ?',
+      whereArgs: [planId, installmentNo],
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> getAllTuitionPaymentsWithDetails() async {
+    final db = await database;
+    return await db.rawQuery('''
+      SELECT 
+        tp.*,
+        tp.paid_amount AS amount,
+        tp.payment_date AS date,
+        s.name AS student_name,
+        s.class_id,
+        c.name AS class_name,
+        cp.name AS plan_name
+      FROM tuition_payments tp
+      JOIN students s ON tp.student_id = s.id
+      JOIN classes c ON s.class_id = c.id
+      JOIN class_tuition_plans cp ON tp.plan_id = cp.id
+      ORDER BY tp.payment_date DESC, tp.id DESC
+    ''');
+  }
+
+  Future<int> getTotalTuitionPaymentsAmount({
+    int? classId,
+  }) async {
+    final db = await database;
+    final where = <String>[];
+    final args = <Object?>[];
+
+    if (classId != null) {
+      where.add('s.class_id = ?');
+      args.add(classId);
+    }
+
+    final whereSql = where.isEmpty ? '' : 'WHERE ${where.join(' AND ')}';
+    final rows = await db.rawQuery(
+      '''
+      SELECT COALESCE(SUM(tp.paid_amount), 0) AS total
+      FROM tuition_payments tp
+      JOIN students s ON s.id = tp.student_id
+      $whereSql
+      ''',
+      args,
+    );
+    final total = rows.isNotEmpty ? rows.first['total'] : 0;
+    if (total is int) return total;
+    if (total is num) return total.toInt();
+    return int.tryParse(total?.toString() ?? '') ?? 0;
+  }
+
+  Future<List<Map<String, dynamic>>> getMonthlyTuitionPaymentsTotals({
+    int? classId,
+  }) async {
+    final db = await database;
+    final where = <String>[];
+    final args = <Object?>[];
+
+    if (classId != null) {
+      where.add('s.class_id = ?');
+      args.add(classId);
+    }
+
+    final whereSql = where.isEmpty ? '' : 'WHERE ${where.join(' AND ')}';
+    return await db.rawQuery(
+      '''
+      SELECT
+        substr(tp.payment_date, 1, 7) AS month,
+        COALESCE(SUM(tp.paid_amount), 0) AS total
+      FROM tuition_payments tp
+      JOIN students s ON s.id = tp.student_id
+      $whereSql
+      GROUP BY substr(tp.payment_date, 1, 7)
+      ORDER BY month ASC
+      ''',
+      args,
+    );
+  }
+
+  Future<void> updateTuitionPaymentAmount(int paymentId, int newAmount, String newDate) async {
+    final db = await database;
+    await db.update(
+      'tuition_payments',
+      {
+        'paid_amount': newAmount,
+        'payment_date': newDate,
+        'updated_at': DateTime.now().toIso8601String(),
+      },
+      where: 'id = ?',
+      whereArgs: [paymentId],
+    );
+  }
+
+  Future<void> deleteTuitionPayment(int paymentId) async {
+    final db = await database;
+    await db.delete(
+      'tuition_payments',
+      where: 'id = ?',
+      whereArgs: [paymentId],
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> getTuitionPlanInstallments(int planId) async {
+    final db = await database;
+    return await db.query(
+      'tuition_plan_installments',
+      where: 'plan_id = ?',
+      whereArgs: [planId],
+      orderBy: 'installment_no ASC',
+    );
+  }
+
+  Future<int> createClassTuitionPlan({
+    required int classId,
+    required String name,
+    required int totalAmount,
+    required List<Map<String, dynamic>> installments,
+  }) async {
+    final db = await database;
+    final nowIso = DateTime.now().toIso8601String();
+
+    return await db.transaction((txn) async {
+      final planId = await txn.insert('class_tuition_plans', {
+        'class_id': classId,
+        'name': name,
+        'total_amount': totalAmount,
+        'installments_count': installments.length,
+        'created_at': nowIso,
+        'updated_at': nowIso,
+      });
+
+      for (final inst in installments) {
+        final no = (inst['installment_no'] as int?) ?? 0;
+        final amount = (inst['amount'] as int?) ?? 0;
+        final dueDate = (inst['due_date'] ?? '').toString();
+        await txn.insert('tuition_plan_installments', {
+          'plan_id': planId,
+          'installment_no': no,
+          'amount': amount,
+          'due_date': dueDate,
+          'created_at': nowIso,
+          'updated_at': nowIso,
+        });
+      }
+
+      return planId;
+    });
+  }
+
+  Future<Map<int, Map<int, Map<String, dynamic>>>> getStudentTuitionOverridesMap({
+    required int planId,
+    required List<int> studentIds,
+  }) async {
+    if (studentIds.isEmpty) return {};
+    final db = await database;
+    final placeholders = List.filled(studentIds.length, '?').join(',');
+    final rows = await db.query(
+      'student_tuition_overrides',
+      where: 'plan_id = ? AND student_id IN ($placeholders)',
+      whereArgs: [planId, ...studentIds],
+      orderBy: 'student_id ASC, installment_no ASC',
+    );
+
+    final result = <int, Map<int, Map<String, dynamic>>>{};
+    for (final r in rows) {
+      final sid = r['student_id'];
+      final sidInt = (sid is int) ? sid : int.tryParse(sid?.toString() ?? '');
+      if (sidInt == null) continue;
+
+      final ino = r['installment_no'];
+      final noInt = (ino is int) ? ino : int.tryParse(ino?.toString() ?? '');
+      if (noInt == null) continue;
+
+      (result[sidInt] ??= <int, Map<String, dynamic>>{})[noInt] = r;
+    }
+    return result;
+  }
+
+  Future<void> upsertStudentTuitionOverride({
+    required int studentId,
+    required int planId,
+    required int installmentNo,
+    required int amount,
+    required String dueDate,
+    String? reason,
+  }) async {
+    final db = await database;
+    final nowIso = DateTime.now().toIso8601String();
+
+    await db.insert(
+      'student_tuition_overrides',
+      {
+        'student_id': studentId,
+        'plan_id': planId,
+        'installment_no': installmentNo,
+        'amount': amount,
+        'due_date': dueDate,
+        'reason': reason,
+        'created_at': nowIso,
+        'updated_at': nowIso,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<void> deleteStudentTuitionOverride({
+    required int studentId,
+    required int planId,
+    required int installmentNo,
+  }) async {
+    final db = await database;
+    await db.delete(
+      'student_tuition_overrides',
+      where: 'student_id = ? AND plan_id = ? AND installment_no = ?',
+      whereArgs: [studentId, planId, installmentNo],
+    );
+  }
+
+  Future<int> getNextTuitionReceiptNo() async {
+    final db = await database;
+    return await db.transaction((txn) async {
+      final rows = await txn.query(
+        'settings',
+        columns: ['value'],
+        where: 'key = ?',
+        whereArgs: ['tuition_receipt_seq'],
+        limit: 1,
+      );
+
+      final current = rows.isNotEmpty
+          ? int.tryParse(rows.first['value']?.toString() ?? '') ?? 0
+          : 0;
+      final next = current + 1;
+
+      await txn.insert(
+        'settings',
+        {'key': 'tuition_receipt_seq', 'value': next.toString()},
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+      return next;
+    });
+  }
+
+  Future<Map<String, dynamic>?> getEffectiveTuitionInstallment({
+    required int studentId,
+    required int planId,
+    required int installmentNo,
+  }) async {
+    final db = await database;
+
+    final overrideRows = await db.query(
+      'student_tuition_overrides',
+      where: 'student_id = ? AND plan_id = ? AND installment_no = ?',
+      whereArgs: [studentId, planId, installmentNo],
+      limit: 1,
+    );
+    final baseRows = await db.query(
+      'tuition_plan_installments',
+      where: 'plan_id = ? AND installment_no = ?',
+      whereArgs: [planId, installmentNo],
+      limit: 1,
+    );
+    final base = baseRows.isNotEmpty ? Map<String, dynamic>.from(baseRows.first) : <String, dynamic>{};
+
+    if (overrideRows.isEmpty) {
+      return base.isEmpty ? null : base;
+    }
+
+    final o = Map<String, dynamic>.from(overrideRows.first);
+    final merged = <String, dynamic>{...base, ...o};
+
+    final oAmount = o['amount'];
+    final oa = (oAmount is int) ? oAmount : int.tryParse(oAmount?.toString() ?? '');
+    if (oa == null || oa <= 0) {
+      merged['amount'] = base['amount'];
+    }
+
+    final oDue = (o['due_date']?.toString() ?? '').trim();
+    if (oDue.isEmpty) {
+      merged['due_date'] = base['due_date'];
+    }
+
+    return merged;
+  }
+
+  Future<int> getTotalPaidForTuitionInstallment({
+    required int studentId,
+    required int planId,
+    required int installmentNo,
+  }) async {
+    final db = await database;
+    final rows = await db.rawQuery(
+      'SELECT COALESCE(SUM(paid_amount), 0) AS total_paid '
+      'FROM tuition_payments '
+      'WHERE student_id = ? AND plan_id = ? AND installment_no = ?',
+      [studentId, planId, installmentNo],
+    );
+    final total = rows.isNotEmpty ? rows.first['total_paid'] : 0;
+    if (total is int) return total;
+    if (total is num) return total.toInt();
+    return int.tryParse(total?.toString() ?? '') ?? 0;
+  }
+
+  Future<List<Map<String, dynamic>>> getTuitionPaymentsForStudentPlan({
+    required int studentId,
+    required int planId,
+  }) async {
+    final db = await database;
+    return await db.query(
+      'tuition_payments',
+      where: 'student_id = ? AND plan_id = ?',
+      whereArgs: [studentId, planId],
+      orderBy: 'payment_date ASC, id ASC',
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> getTuitionPaymentsForStudentsPlan({
+    required int planId,
+    required List<int> studentIds,
+  }) async {
+    final db = await database;
+    if (studentIds.isEmpty) return [];
+    final placeholders = List.filled(studentIds.length, '?').join(',');
+    return await db.query(
+      'tuition_payments',
+      where: 'plan_id = ? AND student_id IN ($placeholders)',
+      whereArgs: [planId, ...studentIds],
+      orderBy: 'student_id ASC, payment_date ASC, id ASC',
+    );
+  }
+
+  Future<int> insertTuitionPayment({
+    required int receiptNo,
+    required int studentId,
+    required int planId,
+    required int installmentNo,
+    required int dueAmount,
+    required int paidAmount,
+    required String paymentDate,
+    String? notes,
+  }) async {
+    final db = await database;
+    final nowIso = DateTime.now().toIso8601String();
+    return await db.insert('tuition_payments', {
+      'receipt_no': receiptNo,
+      'student_id': studentId,
+      'plan_id': planId,
+      'installment_no': installmentNo,
+      'due_amount': dueAmount,
+      'paid_amount': paidAmount,
+      'payment_date': paymentDate,
+      'notes': notes,
+      'created_at': nowIso,
+      'updated_at': nowIso,
+    });
+  }
+
+  Future<void> deleteClassTuitionPlan(int planId) async {
+    final db = await database;
+    await db.transaction((txn) async {
+      await txn.delete('tuition_payments', where: 'plan_id = ?', whereArgs: [planId]);
+      await txn.delete('student_tuition_overrides', where: 'plan_id = ?', whereArgs: [planId]);
+      await txn.delete('tuition_plan_installments', where: 'plan_id = ?', whereArgs: [planId]);
+      await txn.delete('class_tuition_plans', where: 'id = ?', whereArgs: [planId]);
+    });
+  }
+
+  Future<Map<int, int>> getTotalPaidByStudentIdsForTuitionPlan({
+    required List<int> studentIds,
+    required int planId,
+    int? installmentNo,
+  }) async {
+    if (studentIds.isEmpty) return {};
+    final db = await database;
+    final placeholders = List.filled(studentIds.length, '?').join(',');
+
+    final args = <Object?>[planId, ...studentIds];
+    var sql =
+        'SELECT student_id, COALESCE(SUM(paid_amount), 0) AS total_paid '
+        'FROM tuition_payments '
+        'WHERE plan_id = ? AND student_id IN ($placeholders)';
+    if (installmentNo != null) {
+      sql += ' AND installment_no = ?';
+      args.add(installmentNo);
+    }
+    sql += ' GROUP BY student_id';
+
+    final rows = await db.rawQuery(sql, args);
+    final result = <int, int>{};
+    for (final r in rows) {
+      final sid = r['student_id'];
+      final total = r['total_paid'];
+      final sidInt = (sid is int) ? sid : int.tryParse(sid?.toString() ?? '');
+      if (sidInt == null) continue;
+      final totalInt = (total is int)
+          ? total
+          : (total is num)
+              ? total.toInt()
+              : int.tryParse(total?.toString() ?? '') ?? 0;
+      result[sidInt] = totalInt;
+    }
+    return result;
+  }
+
+  Future<Map<int, int>> getTotalPaidByStudentIdsForTuitionPlans({
+    required List<int> studentIds,
+    required List<int> planIds,
+    int? installmentNo,
+  }) async {
+    if (studentIds.isEmpty || planIds.isEmpty) return {};
+    final db = await database;
+
+    final studentPlaceholders = List.filled(studentIds.length, '?').join(',');
+    final planPlaceholders = List.filled(planIds.length, '?').join(',');
+
+    final args = <Object?>[...planIds, ...studentIds];
+
+    var sql =
+        'SELECT student_id, COALESCE(SUM(paid_amount), 0) AS total_paid '
+        'FROM tuition_payments '
+        'WHERE plan_id IN ($planPlaceholders) AND student_id IN ($studentPlaceholders)';
+    if (installmentNo != null) {
+      sql += ' AND installment_no = ?';
+      args.add(installmentNo);
+    }
+    sql += ' GROUP BY student_id';
+
+    final rows = await db.rawQuery(sql, args);
+    final result = <int, int>{};
+    for (final r in rows) {
+      final sid = r['student_id'];
+      final total = r['total_paid'];
+      final sidInt = (sid is int) ? sid : int.tryParse(sid?.toString() ?? '');
+      if (sidInt == null) continue;
+      final totalInt = (total is int)
+          ? total
+          : (total is num)
+              ? total.toInt()
+              : int.tryParse(total?.toString() ?? '') ?? 0;
+      result[sidInt] = totalInt;
+    }
+    return result;
+  }
+
+  Future<Map<int, Map<int, Map<int, Map<String, dynamic>>>>> getStudentTuitionOverridesMapForPlans({
+    required List<int> studentIds,
+    required List<int> planIds,
+  }) async {
+    if (studentIds.isEmpty || planIds.isEmpty) return {};
+    final db = await database;
+
+    final studentPlaceholders = List.filled(studentIds.length, '?').join(',');
+    final planPlaceholders = List.filled(planIds.length, '?').join(',');
+
+    final rows = await db.rawQuery(
+      'SELECT * FROM student_tuition_overrides '
+      'WHERE plan_id IN ($planPlaceholders) AND student_id IN ($studentPlaceholders) '
+      'ORDER BY plan_id ASC, student_id ASC, installment_no ASC',
+      [...planIds, ...studentIds],
+    );
+
+    final result = <int, Map<int, Map<int, Map<String, dynamic>>>>{};
+    for (final r in rows) {
+      final pid = r['plan_id'];
+      final sid = r['student_id'];
+      final ino = r['installment_no'];
+
+      final planId = (pid is int) ? pid : int.tryParse(pid?.toString() ?? '');
+      final studentId = (sid is int) ? sid : int.tryParse(sid?.toString() ?? '');
+      final installmentNo = (ino is int) ? ino : int.tryParse(ino?.toString() ?? '');
+      if (planId == null || studentId == null || installmentNo == null) continue;
+
+      (result[planId] ??= <int, Map<int, Map<String, dynamic>>>{});
+      (result[planId]![studentId] ??= <int, Map<String, dynamic>>{});
+      result[planId]![studentId]![installmentNo] = Map<String, dynamic>.from(r);
+    }
+    return result;
+  }
+
+  // ============================================
   // دوال جدول الكورسات (courses)
   // ============================================
 
@@ -3462,6 +5167,88 @@ class DatabaseHelper {
         print('✅ Created student_notes table');
       }
 
+      if (!tableNames.contains('assignments')) {
+        await db.execute('''
+          CREATE TABLE assignments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            class_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            due_date TEXT NOT NULL,
+            required_count INTEGER,
+            reason TEXT,
+            scope TEXT NOT NULL DEFAULT 'all',
+            assigned_student_ids_json TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (class_id) REFERENCES classes (id) ON DELETE CASCADE
+          )
+        ''');
+        print('✅ Created assignments table');
+      }
+
+      if (!tableNames.contains('assignment_students')) {
+        await db.execute('''
+          CREATE TABLE assignment_students (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            assignment_id INTEGER NOT NULL,
+            student_id INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            done_count INTEGER NOT NULL DEFAULT 0,
+            comment TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (assignment_id) REFERENCES assignments (id) ON DELETE CASCADE,
+            FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE,
+            UNIQUE(assignment_id, student_id)
+          )
+        ''');
+        print('✅ Created assignment_students table');
+      }
+
+      if (!tableNames.contains('cash_withdrawals')) {
+        await db.execute('''
+          CREATE TABLE cash_withdrawals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            amount INTEGER NOT NULL,
+            purpose TEXT,
+            withdrawer_name TEXT,
+            withdraw_date TEXT NOT NULL,
+            note TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+          )
+        ''');
+        await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_cash_withdrawals_date ON cash_withdrawals(withdraw_date)',
+        );
+        await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_cash_withdrawals_withdrawer ON cash_withdrawals(withdrawer_name)',
+        );
+        print('✅ Created cash_withdrawals table');
+      }
+
+      if (!tableNames.contains('cash_incomes')) {
+        await db.execute('''
+          CREATE TABLE cash_incomes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            amount INTEGER NOT NULL,
+            purpose TEXT,
+            supplier_name TEXT,
+            income_date TEXT NOT NULL,
+            note TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+          )
+        ''');
+        await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_cash_incomes_date ON cash_incomes(income_date)',
+        );
+        await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_cash_incomes_supplier ON cash_incomes(supplier_name)',
+        );
+        print('✅ Created cash_incomes table');
+      }
+
       // إنشاء الفهارس المفقودة
       await _createMissingIndexes(db, tableNames);
       
@@ -3566,10 +5353,111 @@ class DatabaseHelper {
         await db.execute('CREATE INDEX IF NOT EXISTS idx_student_notes_class_id ON student_notes(class_id)');
         await db.execute('CREATE INDEX IF NOT EXISTS idx_student_notes_date ON student_notes(date)');
       }
+
+      if (tableNames.contains('assignments')) {
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_assignments_class_id ON assignments(class_id)');
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_assignments_due_date ON assignments(due_date)');
+      }
+
+      if (tableNames.contains('assignment_students')) {
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_assignment_students_assignment_id ON assignment_students(assignment_id)');
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_assignment_students_student_id ON assignment_students(student_id)');
+      }
       
       print('✅ Created missing indexes');
     } catch (e) {
       print('❌ Error creating missing indexes: $e');
+    }
+  }
+
+  // التحقق من سلامة قاعدة البيانات بعد العمليات الحساسة
+  Future<void> _validateDatabaseIntegrity() async {
+    try {
+      final db = await database;
+      
+      // التحقق من عدم وجود سجلات يتيمة (بدون فصل) - استخدام LEFT JOIN أكثر دقة
+      final orphanedStudents = await db.rawQuery('''
+        SELECT s.id, s.name, s.class_id 
+        FROM students s
+        LEFT JOIN classes c ON s.class_id = c.id
+        WHERE c.id IS NULL AND s.class_id IS NOT NULL
+      ''');
+      
+      final orphanedLectures = await db.rawQuery('''
+        SELECT l.id, l.class_id 
+        FROM lectures l
+        LEFT JOIN classes c ON l.class_id = c.id
+        WHERE c.id IS NULL AND l.class_id IS NOT NULL
+      ''');
+      
+      final orphanedExams = await db.rawQuery('''
+        SELECT e.id, e.class_id 
+        FROM exams e
+        LEFT JOIN classes c ON e.class_id = c.id
+        WHERE c.id IS NULL AND e.class_id IS NOT NULL
+      ''');
+      
+      final studentCount = orphanedStudents.length;
+      final lectureCount = orphanedLectures.length;
+      final examCount = orphanedExams.length;
+      
+      if (studentCount > 0 || lectureCount > 0 || examCount > 0) {
+        print('⚠️ Database integrity warning:');
+        print('   - Orphaned students: $studentCount');
+        if (studentCount > 0) {
+          print('     Details: ${orphanedStudents.map((s) => "ID:${s['id']}, Class:${s['class_id']}").join(', ')}');
+        }
+        print('   - Orphaned lectures: $lectureCount');
+        print('   - Orphaned exams: $examCount');
+        
+        // تنظيف السجلات اليتيمة تلقائيًا - فقط الطلاب الذين class_id ليس NULL وغير موجود
+        if (studentCount > 0) {
+          final orphanedIds = orphanedStudents.map((s) => s['id']).whereType<int>().toList();
+          if (orphanedIds.isNotEmpty) {
+            await db.delete('students', where: '''
+              id IN (${List.filled(orphanedIds.length, '?').join(',')})
+            ''', whereArgs: orphanedIds);
+            print('✅ Cleaned orphaned students: ${orphanedIds.join(', ')}');
+          }
+        }
+        
+        if (lectureCount > 0) {
+          final orphanedIds = orphanedLectures.map((l) => l['id']).whereType<int>().toList();
+          if (orphanedIds.isNotEmpty) {
+            await db.delete('lectures', where: '''
+              id IN (${List.filled(orphanedIds.length, '?').join(',')})
+            ''', whereArgs: orphanedIds);
+            print('✅ Cleaned orphaned lectures: ${orphanedIds.join(', ')}');
+          }
+        }
+        
+        if (examCount > 0) {
+          final orphanedIds = orphanedExams.map((e) => e['id']).whereType<int>().toList();
+          if (orphanedIds.isNotEmpty) {
+            await db.delete('exams', where: '''
+              id IN (${List.filled(orphanedIds.length, '?').join(',')})
+            ''', whereArgs: orphanedIds);
+            print('✅ Cleaned orphaned exams: ${orphanedIds.join(', ')}');
+          }
+        }
+      } else {
+        print('✅ Database integrity check passed');
+      }
+      
+      // التحقق من تطابق الإحصائيات
+      final totalClasses = await db.rawQuery('SELECT COUNT(*) as count FROM classes');
+      final totalStudents = await db.rawQuery('SELECT COUNT(*) as count FROM students');
+      final totalLectures = await db.rawQuery('SELECT COUNT(*) as count FROM lectures');
+      final totalExams = await db.rawQuery('SELECT COUNT(*) as count FROM exams');
+      
+      print('📊 Database stats:');
+      print('   - Classes: ${totalClasses.first['count']}');
+      print('   - Students: ${totalStudents.first['count']}');
+      print('   - Lectures: ${totalLectures.first['count']}');
+      print('   - Exams: ${totalExams.first['count']}');
+      
+    } catch (e) {
+      print('❌ Database integrity check failed: $e');
     }
   }
 
