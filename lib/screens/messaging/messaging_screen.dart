@@ -4,6 +4,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:http/http.dart' as http;
 import 'package:file_picker/file_picker.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
@@ -26,6 +27,9 @@ import '../../models/email_service.dart';
 import '../../utils/file_attachment_helper.dart';
 import 'financial_exports_helper.dart';
 import '../../providers/auth_provider.dart';
+import '../../models/assignment_model.dart';
+import '../../models/assignment_student_model.dart';
+import '../../services/bot_api_service.dart';
 
 class MessagingScreen extends StatefulWidget {
   const MessagingScreen({Key? key}) : super(key: key);
@@ -48,6 +52,10 @@ class _MessagingScreenState extends State<MessagingScreen> {
   final TextEditingController _searchController = TextEditingController();
   final DatabaseHelper _dbHelper = DatabaseHelper();
   final FinancialExportsHelper _financialHelper = FinancialExportsHelper();
+  List<Map<String, dynamic>> _telegramGroups = [];
+  Set<String> _selectedTelegramGroupIds = {};
+  bool _telegramGroupsLoading = false;
+  bool _deviceAttachmentSelected = false;
   
   // مسار الملف المُصدّر
   String? _exportedFilePath;
@@ -64,6 +72,117 @@ class _MessagingScreenState extends State<MessagingScreen> {
       if (date.isAfter(endInclusive)) return false;
     }
     return true;
+  }
+
+  String _assignmentStatusLabel(String raw) {
+    switch (raw.trim()) {
+      case 'completed':
+        return 'مكتمل';
+      case 'incomplete':
+        return 'غير مكتمل';
+      case 'deficient':
+        return 'ناقص';
+      case 'excluded':
+        return 'غير مشمول';
+      case 'pending':
+      default:
+        return 'انتظار';
+    }
+  }
+
+  Future<String?> _exportStudentAssignmentsForStudent(StudentModel student) async {
+    if (_selectedClass == null) return null;
+    if (student.id == null) return null;
+
+    try {
+      final classId = _selectedClass!.id!;
+
+      final allAssignments = await _dbHelper.getAssignmentsByClass(classId);
+      final assignments = allAssignments.where((a) => _isDateInRange(a.dueDate)).toList();
+      if (assignments.isEmpty) return null;
+
+      final statuses = await _dbHelper.getAssignmentStudentStatusesByClass(classId);
+      final statusByAssignment = <int, AssignmentStudentModel>{};
+      for (final s in statuses) {
+        if (s.studentId == student.id && s.assignmentId != null) {
+          statusByAssignment[s.assignmentId!] = s;
+        }
+      }
+
+      final ttf = await PdfGoogleFonts.cairoRegular();
+      final ttfBold = await PdfGoogleFonts.cairoBold();
+      final pdf = pw.Document();
+      final className = _selectedClass!.name;
+
+      final rows = <pw.TableRow>[
+        pw.TableRow(
+          decoration: const pw.BoxDecoration(color: PdfColors.blue),
+          children: [
+            pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('اسم الواجب', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, font: ttfBold, fontSize: 9, color: PdfColors.white), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+            pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('السبب', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, font: ttfBold, fontSize: 9, color: PdfColors.white), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+            pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('المطلوب', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, font: ttfBold, fontSize: 9, color: PdfColors.white), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+            pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('المنفذ', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, font: ttfBold, fontSize: 9, color: PdfColors.white), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+            pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('الحالة', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, font: ttfBold, fontSize: 9, color: PdfColors.white), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+          ],
+        ),
+      ];
+
+      for (final a in assignments.where((x) => x.id != null)) {
+        final aid = a.id!;
+        final s = statusByAssignment[aid];
+        final statusRaw = (s?.status ?? 'pending').toString();
+        final done = s?.doneCount ?? 0;
+        final required = a.requiredCount ?? 0;
+        rows.add(
+          pw.TableRow(
+            children: [
+              pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text(a.title, style: pw.TextStyle(font: ttf, fontSize: 8), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+              pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text((a.reason ?? '-').toString(), style: pw.TextStyle(font: ttf, fontSize: 8), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+              pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text(required.toString(), style: pw.TextStyle(font: ttf, fontSize: 8), textAlign: pw.TextAlign.center)),
+              pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text(done.toString(), style: pw.TextStyle(font: ttf, fontSize: 8), textAlign: pw.TextAlign.center)),
+              pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text(_assignmentStatusLabel(statusRaw), style: pw.TextStyle(font: ttfBold, fontSize: 8), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+            ],
+          ),
+        );
+      }
+
+      pdf.addPage(
+        pw.MultiPage(
+          textDirection: pw.TextDirection.rtl,
+          pageFormat: PdfPageFormat.a4,
+          build: (pw.Context context) {
+            return [
+              pw.Container(
+                width: double.infinity,
+                padding: const pw.EdgeInsets.all(12),
+                decoration: pw.BoxDecoration(color: PdfColors.amber100, borderRadius: pw.BorderRadius.circular(8)),
+                child: pw.Column(
+                  children: [
+                    pw.Text(className, style: pw.TextStyle(fontSize: 20, fontWeight: pw.FontWeight.bold, font: ttfBold), textAlign: pw.TextAlign.center, textDirection: pw.TextDirection.rtl),
+                    pw.SizedBox(height: 4),
+                    pw.Text('واجبات الطالب: ${student.name}', style: pw.TextStyle(fontSize: 14, font: ttfBold), textAlign: pw.TextAlign.center, textDirection: pw.TextDirection.rtl),
+                    if (!_allDates) ...[
+                      pw.SizedBox(height: 4),
+                      pw.Text('من ${_startDate?.day ?? '-'} / ${_startDate?.month ?? '-'} / ${_startDate?.year ?? '-'} إلى ${_endDate?.day ?? '-'} / ${_endDate?.month ?? '-'} / ${_endDate?.year ?? '-'}', style: pw.TextStyle(fontSize: 11, font: ttf), textAlign: pw.TextAlign.center, textDirection: pw.TextDirection.rtl),
+                    ],
+                  ],
+                ),
+              ),
+              pw.SizedBox(height: 16),
+              pw.Table(border: pw.TableBorder.all(color: PdfColors.grey), children: rows),
+            ];
+          },
+        ),
+      );
+
+      final directory = await getApplicationDocumentsDirectory();
+      final fileName = '${className}_واجبات_${student.name}.pdf';
+      final file = File('${directory.path}/$fileName');
+      await file.writeAsBytes(await pdf.save());
+      return file.path;
+    } catch (e) {
+      return null;
+    }
   }
 
   Future<void> _pickStartDate() async {
@@ -122,6 +241,7 @@ class _MessagingScreenState extends State<MessagingScreen> {
         _selectedFile = name.isNotEmpty ? name : 'ملف من الجهاز';
         _selectedFilePath = null;
         _exportedFilePath = path;
+        _deviceAttachmentSelected = true;
       });
 
       ScaffoldMessenger.of(context).showSnackBar(
@@ -273,6 +393,7 @@ class _MessagingScreenState extends State<MessagingScreen> {
     'الامتحانات',
     'الدرجة النهائية',
     'ملخص الطالب',
+    'واجبات الطالب',
     'المعلومات المالية',
     'الطلاب المتأخرين بالدفع',
     'سجل الدفعات',
@@ -317,6 +438,7 @@ class _MessagingScreenState extends State<MessagingScreen> {
         _selectedFile = 'لا يوجد ملف';
         _selectedFilePath = null;
         _exportedFilePath = null;
+        _deviceAttachmentSelected = false;
       });
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -336,6 +458,7 @@ class _MessagingScreenState extends State<MessagingScreen> {
       setState(() {
         _selectedFile = fileType;
         _selectedFilePath = null;
+        _deviceAttachmentSelected = false;
       });
 
       String? filePath;
@@ -363,6 +486,37 @@ class _MessagingScreenState extends State<MessagingScreen> {
           break;
         case 'ملخص الطالب':
           filePath = await _exportStudentSummary();
+          break;
+        case 'واجبات الطالب':
+          if (_selectedStudents.length != 1) {
+            _showErrorDialog('يرجى اختيار طالب واحد لإنشاء ملف واجبات الطالب');
+            return;
+          }
+          {
+            final selectedIdStr = _selectedStudents.first;
+            final selectedId = int.tryParse(selectedIdStr);
+            StudentModel? selectedStudent;
+            if (selectedId != null) {
+              try {
+                selectedStudent = _students.firstWhere((s) => s.id == selectedId);
+              } catch (_) {
+                selectedStudent = null;
+              }
+            }
+            if (selectedStudent == null) {
+              try {
+                selectedStudent = _students.firstWhere((s) => (s.id?.toString() ?? '') == selectedIdStr);
+              } catch (_) {
+                selectedStudent = null;
+              }
+            }
+
+            if (selectedStudent == null) {
+              _showErrorDialog('تعذر تحديد الطالب المختار');
+              return;
+            }
+            filePath = await _exportStudentAssignmentsForStudent(selectedStudent);
+          }
           break;
         case 'البيانات المالية':
           filePath = await _exportFinancialDataForStudent();
@@ -1270,13 +1424,19 @@ class _MessagingScreenState extends State<MessagingScreen> {
 
   // تحديث دالة الإرسال الرئيسية
   Future<void> _sendMessage() async {
-    if (_selectedStudents.isEmpty) {
+    if (_selectedMethod == null) {
+      _showErrorDialog('الرجاء اختيار طريقة الإرسال');
+      return;
+    }
+
+    final isTelegramGroup = _selectedMethod == 'telegram' && _selectedRecipient == 'group';
+    if (!isTelegramGroup && _selectedStudents.isEmpty) {
       _showErrorDialog('الرجاء اختيار طالب واحد على الأقل');
       return;
     }
 
-    if (_selectedMethod == null) {
-      _showErrorDialog('الرجاء اختيار طريقة الإرسال');
+    if (isTelegramGroup && _selectedTelegramGroupIds.isEmpty) {
+      _showErrorDialog('الرجاء اختيار كروب واحد على الأقل');
       return;
     }
 
@@ -1297,7 +1457,162 @@ class _MessagingScreenState extends State<MessagingScreen> {
         case 'whatsapp':
           await _sendWhatsApp();
           break;
+        case 'telegram':
+          await _sendTelegram();
+          break;
       }
+    }
+  }
+
+  Future<void> _ensureTelegramGroupsLoaded() async {
+    if (_telegramGroupsLoading) return;
+    if (_telegramGroups.isNotEmpty) return;
+    setState(() {
+      _telegramGroupsLoading = true;
+    });
+    try {
+      final list = await BotApiService.getTelegramGroups();
+      if (!mounted) return;
+      setState(() {
+        _telegramGroups = list;
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _telegramGroupsLoading = false;
+        });
+      }
+    }
+  }
+
+  void _toggleTelegramGroupSelection(String chatId) {
+    setState(() {
+      if (_selectedTelegramGroupIds.contains(chatId)) {
+        _selectedTelegramGroupIds.remove(chatId);
+      } else {
+        _selectedTelegramGroupIds.add(chatId);
+      }
+    });
+  }
+
+  Future<int?> _getTelegramChatIdForStudent(StudentModel student) async {
+    try {
+      final sid = student.id?.toString();
+      DocumentSnapshot<Map<String, dynamic>>? doc;
+      if (sid != null && sid.isNotEmpty) {
+        doc = await FirebaseFirestore.instance.collection('students').doc(sid).get();
+      }
+
+      Map<String, dynamic>? data;
+      if (doc != null && doc.exists) {
+        data = doc.data();
+      } else {
+        final phone = (student.phone ?? '').trim();
+        if (phone.isNotEmpty) {
+          final qs = await FirebaseFirestore.instance
+              .collection('students')
+              .where('phone', isEqualTo: phone)
+              .limit(1)
+              .get();
+          if (qs.docs.isNotEmpty) {
+            data = qs.docs.first.data();
+          }
+        }
+      }
+
+      if (data == null) return null;
+
+      final field = (_selectedRecipient == 'student') ? 'telegram_student_chat_id' : 'telegram_parent_chat_id';
+      final raw = data[field];
+      if (raw == null) return null;
+      if (raw is int) return raw;
+      return int.tryParse(raw.toString());
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _sendTelegram() async {
+    try {
+      final messageText = _messageController.text.trim();
+      final isGroup = _selectedRecipient == 'group';
+
+      if (isGroup) {
+        final groupIds = _selectedTelegramGroupIds.toList();
+        for (final gid in groupIds) {
+          final chatId = int.tryParse(gid);
+          if (chatId == null) continue;
+          await _sendTelegramToChat(chatId, messageText, isGroup: true);
+        }
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('تم الإرسال عبر تيليجرام'), backgroundColor: Colors.green),
+          );
+        }
+        return;
+      }
+
+      int sentCount = 0;
+      int totalCount = _selectedStudents.length;
+      for (final studentId in _selectedStudents) {
+        final student = _students.firstWhere((s) => s.id.toString() == studentId);
+        final chatId = await _getTelegramChatIdForStudent(student);
+        if (chatId == null) continue;
+
+        await _sendTelegramToChat(chatId, messageText, student: student);
+        sentCount++;
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('تم الإرسال عبر تيليجرام إلى $sentCount/$totalCount'),
+            backgroundColor: sentCount > 0 ? Colors.green : Colors.red,
+          ),
+        );
+      }
+    } catch (e) {
+      _showErrorDialog('حدث خطأ أثناء الإرسال: $e');
+    }
+  }
+
+  Future<void> _sendTelegramToChat(
+    int chatId,
+    String messageText, {
+    StudentModel? student,
+    bool isGroup = false,
+  }) async {
+    final hasFile = _selectedFile != null && _selectedFile != 'لا يوجد ملف';
+    if (!hasFile) {
+      await BotApiService.sendTelegramText(chatId: chatId, text: messageText);
+      return;
+    }
+
+    if (_exportedFilePath == null || _exportedFilePath!.trim().isEmpty) {
+      await BotApiService.sendTelegramText(chatId: chatId, text: messageText);
+      return;
+    }
+
+    File fileToSend;
+    if (!isGroup && student != null && !_deviceAttachmentSelected) {
+      final studentPath = await _createStudentSpecificFile(student);
+      if (studentPath == null || studentPath.trim().isEmpty) {
+        await BotApiService.sendTelegramText(chatId: chatId, text: messageText);
+        return;
+      }
+      fileToSend = File(studentPath);
+    } else {
+      fileToSend = File(_exportedFilePath!);
+    }
+
+    if (!await fileToSend.exists()) {
+      await BotApiService.sendTelegramText(chatId: chatId, text: messageText);
+      return;
+    }
+
+    final ok = await BotApiService.sendTelegramDocument(chatId: chatId, file: fileToSend, caption: messageText);
+    if (!ok) {
+      await BotApiService.sendTelegramText(chatId: chatId, text: messageText);
     }
   }
 
@@ -1417,6 +1732,8 @@ class _MessagingScreenState extends State<MessagingScreen> {
         return await _exportLatePaymentsForStudent();
       } else if (_selectedFile == 'سجل الدفعات') {
         return await _exportPaymentHistoryForStudent();
+      } else if (_selectedFile == 'واجبات الطالب') {
+        return await _exportStudentAssignmentsForStudent(student);
       }
       
       // For other files, use the old method
@@ -3611,6 +3928,16 @@ class _MessagingScreenState extends State<MessagingScreen> {
                   ),
                 ),
                 PopupMenuItem(
+                  value: 'واجبات الطالب',
+                  child: Row(
+                    children: [
+                      Icon(Icons.assignment_turned_in_outlined, color: Colors.lightGreen),
+                      const SizedBox(width: 12),
+                      Text('واجبات الطالب'),
+                    ],
+                  ),
+                ),
+                PopupMenuItem(
                   value: 'البيانات المالية',
                   child: Row(
                     children: [
@@ -3744,9 +4071,77 @@ class _MessagingScreenState extends State<MessagingScreen> {
                 _buildRecipientOption('ولي الأمر الأول', 'guardian1'),
                 const SizedBox(height: 8),
                 _buildRecipientOption('ولي الأمر الثاني', 'guardian2'),
+                if (_selectedMethod == 'telegram') ...[
+                  const SizedBox(height: 8),
+                  _buildRecipientOption('الكروب', 'group'),
+                  if (_selectedRecipient == 'group') ...[
+                    const SizedBox(height: 12),
+                    _buildTelegramGroupsSelector(),
+                  ],
+                ],
               ],
             ),
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTelegramGroupsSelector() {
+    if (_telegramGroups.isEmpty && !_telegramGroupsLoading) {
+      _ensureTelegramGroupsLoaded();
+    }
+
+    if (_telegramGroupsLoading) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.symmetric(vertical: 8),
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
+
+    if (_telegramGroups.isEmpty) {
+      return const Text(
+        'لا توجد كروبات مسجلة بعد',
+        style: TextStyle(color: Colors.white),
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFF333333),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFFFEC619)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'اختر الكروب/الكروبات',
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 8),
+          ..._telegramGroups.map((g) {
+            final id = (g['chat_id'] ?? '').toString();
+            final title = (g['title'] ?? '').toString();
+            final checked = _selectedTelegramGroupIds.contains(id);
+            return CheckboxListTile(
+              contentPadding: EdgeInsets.zero,
+              value: checked,
+              onChanged: (v) {
+                _toggleTelegramGroupSelection(id);
+              },
+              activeColor: const Color(0xFFFEC619),
+              checkColor: Colors.black,
+              title: Text(
+                title.isNotEmpty ? title : id,
+                style: const TextStyle(color: Colors.white),
+              ),
+              controlAffinity: ListTileControlAffinity.leading,
+            );
+          }).toList(),
         ],
       ),
     );
@@ -3865,6 +4260,8 @@ class _MessagingScreenState extends State<MessagingScreen> {
                 _buildMethodOption('WhatsApp', 'whatsapp', Icons.send),
                 const SizedBox(height: 8),
                 _buildMethodOption('Email', 'email', Icons.email),
+                const SizedBox(height: 8),
+                _buildMethodOption('Telegram', 'telegram', Icons.send),
               ],
             ),
           ),
@@ -3966,6 +4363,9 @@ class _MessagingScreenState extends State<MessagingScreen> {
       onChanged: isDisabled ? null : (value) {
         setState(() {
           _selectedMethod = value;
+          if (_selectedMethod != 'telegram' && _selectedRecipient == 'group') {
+            _selectedRecipient = 'student';
+          }
         });
       },
       activeColor: const Color(0xFFFEC619),
