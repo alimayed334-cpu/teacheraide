@@ -156,7 +156,7 @@ def send_group():
 
 @app.route("/")
 def home():
-    return "Bot Running"
+    return "Bot Running (Firestore v2)"
 
 
 if __name__ == "__main__":
