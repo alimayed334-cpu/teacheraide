@@ -5,6 +5,7 @@ import base64
 import requests
 import firebase_admin
 from firebase_admin import credentials, firestore
+from flask import Response
 
 app = Flask(__name__)
 
@@ -49,6 +50,21 @@ def send_message(chat_id, text, keyboard=None):
     requests.post(f"{TELEGRAM_API}/sendMessage", json=payload)
 
 
+def send_document(chat_id, file_path, caption=None):
+    if not TELEGRAM_API:
+        return False
+    try:
+        with open(file_path, "rb") as f:
+            files = {"document": f}
+            data = {"chat_id": str(chat_id)}
+            if caption:
+                data["caption"] = caption
+            resp = requests.post(f"{TELEGRAM_API}/sendDocument", data=data, files=files, timeout=60)
+            return resp.status_code >= 200 and resp.status_code < 300
+    except Exception:
+        return False
+
+
 def save_user(chat_id, role, student_phone=None):
     user_ref = db.collection("users").document(str(chat_id))
     data = {"role": role}
@@ -74,6 +90,14 @@ def _find_student_doc_by_phone(phone: str):
         return None, None
     doc = docs[0]
     return doc.reference, (doc.to_dict() or {})
+
+
+def _student_chat_field_for_role(role: str) -> str:
+    r = (role or "").strip()
+    if r == "طالب":
+        return "telegram_student_chat_id"
+    # ولي أمر
+    return "telegram_parent_chat_id"
 
 
 def send_message_text(chat_id, text):
@@ -137,12 +161,13 @@ def webhook():
             role = user_data.get("role", "")
             save_user(chat_id, role, phone)
 
-            existing_chat_id = student_data.get("telegram_chat_id")
+            chat_field = _student_chat_field_for_role(role)
+            existing_chat_id = student_data.get(chat_field)
             if existing_chat_id is not None and str(existing_chat_id) != str(chat_id):
-                send_message(chat_id, "هذا الطالب مربوط مسبقًا بحساب تيليجرام آخر ❌")
+                send_message(chat_id, "هذا الحساب مربوط مسبقًا بحساب تيليجرام آخر ❌")
                 return "ok", 200
 
-            student_ref.set({"telegram_chat_id": chat_id}, merge=True)
+            student_ref.set({chat_field: chat_id}, merge=True)
             send_message(chat_id, "تم الربط ✅")
 
         return "ok", 200
@@ -181,6 +206,34 @@ def send_group():
         requests.post(f"{TELEGRAM_API}/sendMessage", json=data)
 
     return {"status": "sent"}
+
+
+@app.route("/send-document", methods=["POST"])
+def send_document_endpoint():
+    if not TELEGRAM_API:
+        return jsonify({"status": "error", "message": "BOT_TOKEN not configured"}), 500
+
+    chat_id = request.form.get("chat_id")
+    caption = request.form.get("caption")
+    uploaded = request.files.get("file")
+    if not chat_id or uploaded is None:
+        return jsonify({"status": "error", "message": "chat_id and file are required"}), 400
+
+    # Save to a temp file then send
+    tmp_dir = os.getenv("TMPDIR") or "/tmp"
+    os.makedirs(tmp_dir, exist_ok=True)
+    tmp_path = os.path.join(tmp_dir, uploaded.filename or "upload.bin")
+    uploaded.save(tmp_path)
+
+    ok = send_document(chat_id, tmp_path, caption=caption)
+    try:
+        os.remove(tmp_path)
+    except Exception:
+        pass
+
+    if ok:
+        return jsonify({"status": "sent"})
+    return jsonify({"status": "error", "message": "failed to send document"}), 500
 
 
 @app.route("/")
