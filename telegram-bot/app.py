@@ -57,11 +57,23 @@ def save_user(chat_id, role, student_phone=None):
     user_ref.set(data, merge=True)
 
 
-def get_student_by_phone(phone: str):
+def get_user_by_phone(phone: str):
     docs = db.collection("students").where("phone", "==", phone).limit(1).get()
     if not docs:
         return None
     return docs[0].to_dict()
+
+
+def get_student_by_phone(phone: str):
+    return get_user_by_phone(phone)
+
+
+def send_message_text(chat_id, text):
+    send_message(chat_id, text)
+
+
+def send_group_text(chat_id, text):
+    send_message(chat_id, text)
 
 
 @app.route("/webhook", methods=["POST"])
