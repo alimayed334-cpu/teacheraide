@@ -163,9 +163,7 @@ def send_group():
 @app.route("/")
 def home():
     return "Bot Running"
-
-
 if name == "main":
-    # استخدم PORT ديناميكي حسب ما يعطيه Railway
+    import os
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
