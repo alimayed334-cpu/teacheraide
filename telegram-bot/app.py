@@ -68,6 +68,14 @@ def get_student_by_phone(phone: str):
     return get_user_by_phone(phone)
 
 
+def _find_student_doc_by_phone(phone: str):
+    docs = db.collection("students").where("phone", "==", phone).limit(1).get()
+    if not docs:
+        return None, None
+    doc = docs[0]
+    return doc.reference, (doc.to_dict() or {})
+
+
 def send_message_text(chat_id, text):
     send_message(chat_id, text)
 
@@ -121,12 +129,21 @@ def webhook():
 
         if user_data:
             phone = (text or "").strip()
-            student = get_student_by_phone(phone)
-            if student:
-                save_user(chat_id, user_data.get("role", ""), phone)
-                send_message(chat_id, "تم الربط ✅")
-            else:
+            student_ref, student_data = _find_student_doc_by_phone(phone)
+            if student_ref is None:
                 send_message(chat_id, "رقم الطالب غير موجود ❌")
+                return "ok", 200
+
+            role = user_data.get("role", "")
+            save_user(chat_id, role, phone)
+
+            existing_chat_id = student_data.get("telegram_chat_id")
+            if existing_chat_id is not None and str(existing_chat_id) != str(chat_id):
+                send_message(chat_id, "هذا الطالب مربوط مسبقًا بحساب تيليجرام آخر ❌")
+                return "ok", 200
+
+            student_ref.set({"telegram_chat_id": chat_id}, merge=True)
+            send_message(chat_id, "تم الربط ✅")
 
         return "ok", 200
     except Exception as e:
