@@ -96,6 +96,54 @@ def get_student_by_phone(phone: str):
     return get_user_by_phone(phone)
 
 
+def _normalize_phone_candidates(raw: str):
+    text = (raw or '').strip()
+    if not text:
+        return []
+    digits = ''.join(ch for ch in text if ch.isdigit())
+    if not digits:
+        return []
+
+    country_code = ''.join(ch for ch in os.getenv('COUNTRY_CODE', '964') if ch.isdigit())
+    candidates = []
+    candidates.append(digits)
+
+    if digits.startswith('0') and len(digits) > 1:
+        without_zero = digits[1:]
+        candidates.append(without_zero)
+        if country_code and not without_zero.startswith(country_code):
+            candidates.append(country_code + without_zero)
+
+    if country_code and not digits.startswith(country_code):
+        candidates.append(country_code + digits)
+
+    seen = set()
+    out = []
+    for c in candidates:
+        if c and c not in seen:
+            seen.add(c)
+            out.append(c)
+    return out
+
+
+def _find_student_doc_for_student_phone(phone_raw: str):
+    for cand in _normalize_phone_candidates(phone_raw):
+        docs = _ws_collection('students').where('phone', '==', cand).limit(1).get()
+        if docs:
+            doc = docs[0]
+            return doc.reference, (doc.to_dict() or {})
+    return None, None
+
+
+def _find_student_doc_for_parent_phone(phone_raw: str):
+    for cand in _normalize_phone_candidates(phone_raw):
+        docs = _ws_collection('students').where('parent_phone', '==', cand).limit(1).get()
+        if docs:
+            doc = docs[0]
+            return doc.reference, (doc.to_dict() or {})
+    return None, None
+
+
 def _find_student_doc_by_phone(phone: str):
     docs = _ws_collection("students").where("phone", "==", phone).limit(1).get()
     if not docs:
@@ -160,17 +208,38 @@ def webhook():
 
         if text in ["طالب", "ولي أمر"]:
             save_user(chat_id, text)
-            send_message(chat_id, "أدخل رقم الطالب:")
+            if text == "ولي أمر":
+                send_message(
+                    chat_id,
+                    "هذه بوت استاذ باقر القره غولي لارسال التنبيهات و الدرجات\n"
+                    "يرجى كتابة رقم ولي الامر المسجل لدينا\n"
+                    "مثل 077XXXXXXXX",
+                )
+            else:
+                send_message(
+                    chat_id,
+                    "هذه بوت استاذ باقر القره غولي لارسال التنبيهات و الدرجات\n"
+                    "يرجى كتابة رقم الهاتف للطالب المسجل لدينا\n"
+                    "مثل 077XXXXXXXX",
+                )
             return "ok", 200
 
         if user_data:
             phone = (text or "").strip()
-            student_ref, student_data = _find_student_doc_by_phone(phone)
+            role = (user_data.get("role", "") or "").strip()
+
+            if role == "ولي أمر":
+                student_ref, student_data = _find_student_doc_for_parent_phone(phone)
+            else:
+                student_ref, student_data = _find_student_doc_for_student_phone(phone)
+
             if student_ref is None:
-                send_message(chat_id, "رقم الطالب غير موجود ❌")
+                if role == "ولي أمر":
+                    send_message(chat_id, "رقم ولي الامر غير موجود ❌")
+                else:
+                    send_message(chat_id, "رقم الطالب غير موجود ❌")
                 return "ok", 200
 
-            role = user_data.get("role", "")
             save_user(chat_id, role, phone)
 
             chat_field = _student_chat_field_for_role(role)
@@ -180,7 +249,11 @@ def webhook():
                 return "ok", 200
 
             student_ref.set({chat_field: chat_id}, merge=True)
-            send_message(chat_id, "تم الربط ✅")
+            send_message(
+                chat_id,
+                "تم التسجيل ✅\n"
+                "سيتم ارسال ملفات و تنبيهات وكل ما يخص الطالب هنا",
+            )
 
         return "ok", 200
     except Exception as e:
