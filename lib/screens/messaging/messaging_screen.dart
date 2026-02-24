@@ -1810,9 +1810,7 @@ class _MessagingScreenState extends State<MessagingScreen> {
       if (isGroup) {
         final groupIds = _selectedTelegramGroupIds.toList();
         for (final gid in groupIds) {
-          final chatId = int.tryParse(gid);
-          if (chatId == null) continue;
-          await _sendTelegramToChat(chatId, messageText, isGroup: true);
+          await _sendTelegramToChat(gid, messageText, isGroup: true);
         }
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -1857,7 +1855,7 @@ class _MessagingScreenState extends State<MessagingScreen> {
   }
 
   Future<void> _sendTelegramToChat(
-    int chatId,
+    dynamic chatId,
     String messageText, {
     StudentModel? student,
     bool isGroup = false,
