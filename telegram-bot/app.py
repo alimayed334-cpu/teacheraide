@@ -238,23 +238,41 @@ def webhook():
     try:
         data = request.get_json(silent=True) or {}
 
+        # Telegram may deliver different update types depending on chat type.
+        # - groups/supergroups: message
+        # - channels: channel_post
+        # - when bot is added/removed: my_chat_member / chat_member
         message = data.get("message")
         if not isinstance(message, dict):
+            message = data.get("channel_post")
+
+        # membership updates
+        member_update = data.get("my_chat_member") or data.get("chat_member")
+        if not isinstance(message, dict) and not isinstance(member_update, dict):
             return "ok", 200
 
-        chat = message.get("chat") or {}
+        chat = {}
+        text = ""
+        if isinstance(message, dict):
+            chat = message.get("chat") or {}
+            text = message.get("text", "")
+        elif isinstance(member_update, dict):
+            chat = member_update.get("chat") or {}
+
         chat_id = chat.get("id")
-        text = message.get("text", "")
         if chat_id is None:
             return "ok", 200
 
-        if chat.get("type") in ["group", "supergroup"]:
-            title = chat.get("title", "Unknown")
+        chat_type = (chat.get("type") or "").strip()
+        if chat_type in ["group", "supergroup", "channel"]:
+            title = chat.get("title") or chat.get("username") or "Unknown"
             _ws_collection("groups").document(str(chat_id)).set(
-                {"chat_id": chat_id, "title": title},
+                {"chat_id": chat_id, "title": title, "type": chat_type},
                 merge=True,
             )
-            return "ok", 200
+            # For channels/groups we don't process linking flow.
+            if chat_type != "private":
+                return "ok", 200
 
         user_doc = db.collection("users").document(str(chat_id)).get()
         user_data = user_doc.to_dict() if user_doc.exists else None

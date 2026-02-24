@@ -1,3 +1,5 @@
+import 'dart:core';
+import 'dart:core' as core;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
@@ -45,14 +47,14 @@ class _MessagingScreenState extends State<MessagingScreen> {
   String? _selectedRecipient;
   String? _selectedMethod;
   ClassModel? _selectedClass;
-  List<StudentModel> _students = [];
-  List<StudentModel> _filteredStudents = [];
+  core.List<StudentModel> _students = [];
+  core.List<StudentModel> _filteredStudents = [];
   Set<String> _selectedStudents = {};
   SortOption _sortOption = SortOption.none;
   final TextEditingController _searchController = TextEditingController();
   final DatabaseHelper _dbHelper = DatabaseHelper();
   final FinancialExportsHelper _financialHelper = FinancialExportsHelper();
-  List<Map<String, dynamic>> _telegramGroups = [];
+  core.List<Map<String, dynamic>> _telegramGroups = [];
   Set<String> _selectedTelegramGroupIds = {};
   bool _telegramGroupsLoading = false;
   bool _deviceAttachmentSelected = false;
@@ -379,12 +381,12 @@ class _MessagingScreenState extends State<MessagingScreen> {
   
   // متغيرات جديدة للإيميل التلقائي
   Map<String, FileInfo> _studentFiles = {}; // لكل طالب ملفه الخاص
-  List<FileInfo> _availableAppFiles = [];
+  core.List<FileInfo> _availableAppFiles = [];
   bool _isEmailMode = false;
   bool _sendingEmails = false;
   
   // خيارات الملفات المتاحة للتصدير (نفسها من صفحة التصدير)
-  final List<String> _availableFiles = [
+  final core.List<String> _availableFiles = [
     'لا يوجد ملف',
     'معلومات الطالب',
     'ملخص الحضور',
@@ -461,6 +463,18 @@ class _MessagingScreenState extends State<MessagingScreen> {
         _deviceAttachmentSelected = false;
       });
 
+      final studentSpecificTypes = <String>{
+        'الحضور التفصيلي',
+        'حضور الامتحانات',
+        'الامتحانات',
+        'الدرجة النهائية',
+        'ملخص الطالب',
+        'واجبات الطالب',
+        'البيانات المالية',
+        'الطلاب المتأخرين بالدفع',
+        'سجل الدفعات',
+      };
+
       String? filePath;
       switch (fileType) {
         case 'معلومات الطالب':
@@ -469,63 +483,41 @@ class _MessagingScreenState extends State<MessagingScreen> {
         case 'ملخص الحضور':
           filePath = await _exportAttendanceSummary();
           break;
-        case 'الحضور التفصيلي':
-          filePath = await _exportAttendanceDetailed();
-          break;
-        case 'حضور الامتحانات':
-          filePath = await _exportExamAttendance();
-          break;
-        case 'الامتحانات':
-          filePath = await _exportExams();
-          break;
-        case 'الدرجة النهائية':
-          filePath = await _exportFinalGrades();
-          break;
         case 'ملاحظات الفصول':
           filePath = await _exportClassNotes();
           break;
         case 'ملخص الطالب':
-          filePath = await _exportStudentSummary();
-          break;
+        case 'الحضور التفصيلي':
+        case 'حضور الامتحانات':
+        case 'الامتحانات':
+        case 'الدرجة النهائية':
         case 'واجبات الطالب':
-          if (_selectedStudents.length != 1) {
-            _showErrorDialog('يرجى اختيار طالب واحد لإنشاء ملف واجبات الطالب');
-            return;
-          }
-          {
-            final selectedIdStr = _selectedStudents.first;
-            final selectedId = int.tryParse(selectedIdStr);
-            StudentModel? selectedStudent;
-            if (selectedId != null) {
-              try {
-                selectedStudent = _students.firstWhere((s) => s.id == selectedId);
-              } catch (_) {
-                selectedStudent = null;
-              }
+        case 'البيانات المالية':
+        case 'الطلاب المتأخرين بالدفع':
+        case 'سجل الدفعات':
+          // Student-specific exports need selecting exactly one student.
+          if (studentSpecificTypes.contains(fileType)) {
+            if (_selectedStudents.length != 1) {
+              _showErrorDialog('يرجى اختيار طالب واحد لإنشاء هذا الملف');
+              return;
             }
-            if (selectedStudent == null) {
-              try {
-                selectedStudent = _students.firstWhere((s) => (s.id?.toString() ?? '') == selectedIdStr);
-              } catch (_) {
-                selectedStudent = null;
-              }
+
+            final selectedIdStr = _selectedStudents.first;
+            StudentModel? selectedStudent;
+            try {
+              selectedStudent = _students.firstWhere((s) => (s.id?.toString() ?? '') == selectedIdStr);
+            } catch (_) {
+              selectedStudent = null;
             }
 
             if (selectedStudent == null) {
               _showErrorDialog('تعذر تحديد الطالب المختار');
               return;
             }
-            filePath = await _exportStudentAssignmentsForStudent(selectedStudent);
+
+            filePath = await _createStudentSpecificFile(selectedStudent);
+            break;
           }
-          break;
-        case 'البيانات المالية':
-          filePath = await _exportFinancialDataForStudent();
-          break;
-        case 'الطلاب المتأخرين بالدفع':
-          filePath = await _exportLatePaymentsForStudent();
-          break;
-        case 'سجل الدفعات':
-          filePath = await _exportPaymentHistoryForStudent();
           break;
       }
 
@@ -1229,7 +1221,7 @@ class _MessagingScreenState extends State<MessagingScreen> {
     
     // Update filtered students after statistics are calculated
     setState(() {
-      _filteredStudents = List.from(_students);
+      _filteredStudents = core.List.from(_students);
       _sortStudents();
     });
   }
@@ -1240,7 +1232,7 @@ class _MessagingScreenState extends State<MessagingScreen> {
     
     // جلب بيانات الحضور من جدول attendance - نفس الطريقة المستخدمة في صفحة الحضور
     final int? classId = _selectedClass?.id;
-    final List<Map<String, Object?>> attendanceData;
+    final core.List<Map<String, Object?>> attendanceData;
     if (classId == null) {
       attendanceData = await db.query(
         'attendance',
@@ -1466,7 +1458,6 @@ class _MessagingScreenState extends State<MessagingScreen> {
 
   Future<void> _ensureTelegramGroupsLoaded() async {
     if (_telegramGroupsLoading) return;
-    if (_telegramGroups.isNotEmpty) return;
     setState(() {
       _telegramGroupsLoading = true;
     });
@@ -1513,6 +1504,38 @@ class _MessagingScreenState extends State<MessagingScreen> {
       if (doc != null && doc.exists) {
         data = doc.data();
       } else {
+        // Fallbacks: some Firestore exports store the student id in fields like
+        // local_id / student_id and keep phone null.
+        if (sid != null && sid.isNotEmpty) {
+          try {
+            final qsLocal = await studentsCol.where('local_id', isEqualTo: sid).limit(1).get();
+            if (qsLocal.docs.isNotEmpty) {
+              data = qsLocal.docs.first.data();
+            }
+          } catch (_) {}
+
+          if (data == null) {
+            try {
+              final qsStudentId = await studentsCol.where('student_id', isEqualTo: sid).limit(1).get();
+              if (qsStudentId.docs.isNotEmpty) {
+                data = qsStudentId.docs.first.data();
+              }
+            } catch (_) {}
+          }
+
+          if (data == null) {
+            final sidInt = int.tryParse(sid);
+            if (sidInt != null) {
+              try {
+                final qsNumeric = await studentsCol.where('id', isEqualTo: sidInt).limit(1).get();
+                if (qsNumeric.docs.isNotEmpty) {
+                  data = qsNumeric.docs.first.data();
+                }
+              } catch (_) {}
+            }
+          }
+        }
+
         final phone = (student.phone ?? '').trim();
         if (phone.isNotEmpty) {
           final qs = await studentsCol
@@ -1559,10 +1582,14 @@ class _MessagingScreenState extends State<MessagingScreen> {
 
       int sentCount = 0;
       int totalCount = _selectedStudents.length;
+      final missing = <String>[];
       for (final studentId in _selectedStudents) {
         final student = _students.firstWhere((s) => s.id.toString() == studentId);
         final chatId = await _getTelegramChatIdForStudent(student);
-        if (chatId == null) continue;
+        if (chatId == null) {
+          missing.add(student.name);
+          continue;
+        }
 
         await _sendTelegramToChat(chatId, messageText, student: student);
         sentCount++;
@@ -1575,6 +1602,12 @@ class _MessagingScreenState extends State<MessagingScreen> {
             backgroundColor: sentCount > 0 ? Colors.green : Colors.red,
           ),
         );
+
+        if (missing.isNotEmpty) {
+          _showErrorDialog(
+            'لم يتم الإرسال إلى بعض الطلاب لأنهم غير مربوطين بتيليجرام (${missing.length}/$totalCount):\n\n${missing.join('\n')}',
+          );
+        }
       }
     } catch (e) {
       _showErrorDialog('حدث خطأ أثناء الإرسال: $e');
@@ -2082,7 +2115,7 @@ class _MessagingScreenState extends State<MessagingScreen> {
           // تحميل بيانات الحضور التفصيلي للطالب
           final allLectures = await _dbHelper.getLecturesByClass(_selectedClass!.id!);
           final lectures = allLectures.where((l) => _isDateInRange(l.date)).toList();
-          List<Map<String, dynamic>> attendanceDetails = [];
+          core.List<Map<String, dynamic>> attendanceDetails = [];
           
           for (var lecture in lectures) {
             final attendance = await _dbHelper.getAttendanceByStudentAndLecture(
@@ -2217,7 +2250,7 @@ class _MessagingScreenState extends State<MessagingScreen> {
           // تحميل بيانات امتحانات الطالب
           final allExams = await _dbHelper.getExamsByClass(_selectedClass!.id!);
           final exams = allExams.where((e) => _isDateInRange(e.date)).toList();
-          List<Map<String, dynamic>> examAttendance = [];
+          core.List<Map<String, dynamic>> examAttendance = [];
           
           for (var exam in exams) {
             final attendance = await _dbHelper.getStudentGradeForExam(
@@ -2356,7 +2389,7 @@ class _MessagingScreenState extends State<MessagingScreen> {
         case 'الامتحانات':
           // تحميل درجات الامتحانات للطالب
           final studentExams = await _dbHelper.getGradesByStudent(student.id!);
-          List<Map<String, dynamic>> examGrades = [];
+          core.List<Map<String, dynamic>> examGrades = [];
           
           for (var grade in studentExams) {
             final exam = await _resolveExamForGrade(grade);
@@ -2956,7 +2989,7 @@ class _MessagingScreenState extends State<MessagingScreen> {
 
     try {
       // جمع أرقام الهواتف للطلاب المحددين
-      List<String> phoneNumbers = [];
+      core.List<String> phoneNumbers = [];
       
       for (final studentId in _selectedStudents) {
         final student = _students.firstWhere((s) => s.id.toString() == studentId);
@@ -2967,11 +3000,8 @@ class _MessagingScreenState extends State<MessagingScreen> {
           case 'student':
             phoneNumber = student.phone;
             break;
-          case 'guardian1':
-            phoneNumber = student.primaryGuardian?.phone ?? student.parentPhone;
-            break;
-          case 'guardian2':
-            phoneNumber = student.secondaryGuardian?.phone;
+          case 'parent':
+            phoneNumber = student.primaryGuardian?.phone ?? student.secondaryGuardian?.phone ?? student.parentPhone;
             break;
           default:
             phoneNumber = student.phone;
@@ -3068,11 +3098,8 @@ class _MessagingScreenState extends State<MessagingScreen> {
         case 'student':
           phoneNumber = student.phone;
           break;
-        case 'guardian1':
-          phoneNumber = student.primaryGuardian?.phone;
-          break;
-        case 'guardian2':
-          phoneNumber = student.secondaryGuardian?.phone;
+        case 'parent':
+          phoneNumber = student.primaryGuardian?.phone ?? student.secondaryGuardian?.phone ?? student.parentPhone;
           break;
       }
 
@@ -3213,7 +3240,7 @@ class _MessagingScreenState extends State<MessagingScreen> {
   Future<bool?> _showMessagePreviewDialog(
     String title,
     String message,
-    List<String> recipients,
+    core.List<String> recipients,
     String confirmText,
   ) async {
     return showDialog<bool>(
@@ -4073,12 +4100,10 @@ class _MessagingScreenState extends State<MessagingScreen> {
               children: [
                 _buildRecipientOption('الطالب', 'student'),
                 const SizedBox(height: 8),
-                _buildRecipientOption('ولي الأمر الأول', 'guardian1'),
-                const SizedBox(height: 8),
-                _buildRecipientOption('ولي الأمر الثاني', 'guardian2'),
+                _buildRecipientOption('ولي الأمر', 'parent'),
                 if (_selectedMethod == 'telegram') ...[
                   const SizedBox(height: 8),
-                  _buildRecipientOption('الكروب', 'group'),
+                  _buildRecipientOption('مجموعات تيليجرام', 'group'),
                   if (_selectedRecipient == 'group') ...[
                     const SizedBox(height: 12),
                     _buildTelegramGroupsSelector(),
