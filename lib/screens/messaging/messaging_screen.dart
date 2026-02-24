@@ -1495,6 +1495,7 @@ class _MessagingScreenState extends State<MessagingScreen> {
           : FirebaseFirestore.instance.collection('students');
 
       final sid = student.id?.toString();
+      final sidInt = (sid != null && sid.isNotEmpty) ? int.tryParse(sid) : null;
       DocumentSnapshot<Map<String, dynamic>>? doc;
       if (sid != null && sid.isNotEmpty) {
         doc = await studentsCol.doc(sid).get();
@@ -1514,6 +1515,15 @@ class _MessagingScreenState extends State<MessagingScreen> {
             }
           } catch (_) {}
 
+          if (data == null && sidInt != null) {
+            try {
+              final qsLocalNum = await studentsCol.where('local_id', isEqualTo: sidInt).limit(1).get();
+              if (qsLocalNum.docs.isNotEmpty) {
+                data = qsLocalNum.docs.first.data();
+              }
+            } catch (_) {}
+          }
+
           if (data == null) {
             try {
               final qsStudentId = await studentsCol.where('student_id', isEqualTo: sid).limit(1).get();
@@ -1523,8 +1533,16 @@ class _MessagingScreenState extends State<MessagingScreen> {
             } catch (_) {}
           }
 
+          if (data == null && sidInt != null) {
+            try {
+              final qsStudentIdNum = await studentsCol.where('student_id', isEqualTo: sidInt).limit(1).get();
+              if (qsStudentIdNum.docs.isNotEmpty) {
+                data = qsStudentIdNum.docs.first.data();
+              }
+            } catch (_) {}
+          }
+
           if (data == null) {
-            final sidInt = int.tryParse(sid);
             if (sidInt != null) {
               try {
                 final qsNumeric = await studentsCol.where('id', isEqualTo: sidInt).limit(1).get();
@@ -1764,7 +1782,7 @@ class _MessagingScreenState extends State<MessagingScreen> {
     
     try {
       // Check if this is a financial file that should use the new helper
-      if (_selectedFile == 'المعلومات المالية') {
+      if (_selectedFile == 'البيانات المالية' || _selectedFile == 'المعلومات المالية') {
         return await _exportFinancialDataForStudent();
       } else if (_selectedFile == 'الطلاب المتأخرين بالدفع') {
         return await _exportLatePaymentsForStudent();
@@ -1935,6 +1953,7 @@ class _MessagingScreenState extends State<MessagingScreen> {
           // تحميل بيانات الحضور للطالب
           final allLectures = await _dbHelper.getLecturesByClass(_selectedClass!.id!);
           final lectures = allLectures.where((l) => _isDateInRange(l.date)).toList();
+          if (lectures.isEmpty) return null;
           int present = 0, absent = 0, late = 0, expelled = 0, excused = 0;
           
           for (var lecture in lectures) {
@@ -2115,6 +2134,7 @@ class _MessagingScreenState extends State<MessagingScreen> {
           // تحميل بيانات الحضور التفصيلي للطالب
           final allLectures = await _dbHelper.getLecturesByClass(_selectedClass!.id!);
           final lectures = allLectures.where((l) => _isDateInRange(l.date)).toList();
+          if (lectures.isEmpty) return null;
           core.List<Map<String, dynamic>> attendanceDetails = [];
           
           for (var lecture in lectures) {
@@ -2250,6 +2270,7 @@ class _MessagingScreenState extends State<MessagingScreen> {
           // تحميل بيانات امتحانات الطالب
           final allExams = await _dbHelper.getExamsByClass(_selectedClass!.id!);
           final exams = allExams.where((e) => _isDateInRange(e.date)).toList();
+          if (exams.isEmpty) return null;
           core.List<Map<String, dynamic>> examAttendance = [];
           
           for (var exam in exams) {
@@ -2290,6 +2311,8 @@ class _MessagingScreenState extends State<MessagingScreen> {
               'status': statusText,
             });
           }
+
+          if (examAttendance.isEmpty) return null;
 
           pdf.addPage(
             pw.MultiPage(
@@ -2409,6 +2432,8 @@ class _MessagingScreenState extends State<MessagingScreen> {
               });
             }
           }
+
+          if (examGrades.isEmpty) return null;
 
           pdf.addPage(
             pw.MultiPage(
@@ -2561,6 +2586,8 @@ class _MessagingScreenState extends State<MessagingScreen> {
               countedExams++;
             }
           }
+
+          if (countedExams == 0) return null;
           
           final finalPercentage = totalMax > 0 ? ((totalScore / totalMax) * 100).round() : 0;
 
@@ -2679,6 +2706,8 @@ class _MessagingScreenState extends State<MessagingScreen> {
           final allExams = await _dbHelper.getExamsByClass(_selectedClass!.id!);
           final exams = allExams.where((e) => _isDateInRange(e.date)).toList();
           final grades = await _dbHelper.getGradesByStudent(student.id!);
+
+          if (lectures.isEmpty && exams.isEmpty && grades.isEmpty) return null;
           
           // حساب إحصائيات الحضور
           int present = 0, absent = 0, late = 0, expelled = 0, excused = 0;
