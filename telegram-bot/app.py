@@ -3,6 +3,7 @@ import os
 import json
 import base64
 import requests
+import re
 import firebase_admin
 from firebase_admin import credentials, firestore
 from flask import Response
@@ -136,11 +137,75 @@ def _find_student_doc_for_student_phone(phone_raw: str):
 
 
 def _find_student_doc_for_parent_phone(phone_raw: str):
+    parent_fields = ['parent_phone', 'parentPhone']
     for cand in _normalize_phone_candidates(phone_raw):
-        docs = _ws_collection('students').where('parent_phone', '==', cand).limit(1).get()
-        if docs:
-            doc = docs[0]
-            return doc.reference, (doc.to_dict() or {})
+        for field in parent_fields:
+            docs = _ws_collection('students').where(field, '==', cand).limit(1).get()
+            if docs:
+                doc = docs[0]
+                return doc.reference, (doc.to_dict() or {})
+
+    # Fallback: some data stores parent phone inside guardian encoded string:
+    # primary_guardian = "name:...|phone:077...|..." (or camelCase)
+    def _extract_phone_from_guardian(value: str):
+        if not value:
+            return None
+        text = str(value)
+        m = re.search(r"phone\s*[:=]\s*([+0-9]{7,})", text, flags=re.IGNORECASE)
+        if not m:
+            return None
+        raw = m.group(1)
+        digits = ''.join(ch for ch in raw if ch.isdigit())
+        return digits or None
+
+    wanted = set(_normalize_phone_candidates(phone_raw))
+
+    guardian_fields = [
+        'primary_guardian',
+        'secondary_guardian',
+        'primaryGuardian',
+        'secondaryGuardian',
+    ]
+
+    def _scan_collection(col):
+        for doc in col.stream():
+            data = doc.to_dict() or {}
+            for gfield in guardian_fields:
+                g = data.get(gfield)
+                p = _extract_phone_from_guardian(g)
+                if not p:
+                    continue
+                for cand in _normalize_phone_candidates(p):
+                    if cand in wanted:
+                        return doc.reference, data, cand
+        return None, None, None
+
+    try:
+        # 1) workspace-scoped (current behavior)
+        ref, data, matched = _scan_collection(_ws_collection('students'))
+        if ref is not None:
+            # Write back parent_phone if missing to stabilize future lookups.
+            try:
+                existing = (data or {}).get('parent_phone')
+                if (existing is None or str(existing).strip() == '') and matched:
+                    ref.set({'parent_phone': matched}, merge=True)
+            except Exception as e:
+                print(f'parent phone writeback failed: {e}')
+            return ref, data
+
+        # 2) root-level fallback in case WORKSPACE_ID is misconfigured
+        ref, data, matched = _scan_collection(db.collection('students'))
+        if ref is not None:
+            try:
+                existing = (data or {}).get('parent_phone')
+                if (existing is None or str(existing).strip() == '') and matched:
+                    ref.set({'parent_phone': matched}, merge=True)
+            except Exception as e:
+                print(f'parent phone writeback failed: {e}')
+            return ref, data
+    except Exception as e:
+        print(f'parent phone guardian fallback scan failed: {e}')
+
     return None, None
 
 
