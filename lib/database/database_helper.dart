@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:core';
+import 'dart:core' as core;
 import 'package:flutter/foundation.dart';
 import 'package:cloud_firestore/cloud_firestore.dart' show Timestamp;
 import 'package:sqflite/sqflite.dart';
@@ -343,12 +345,45 @@ class DatabaseHelper {
       case 'class_course_prices':
       case 'installments':
       case 'assignments':
+        int? id = int.tryParse(docId);
+        if (id == null) {
+          // بعض الوثائق قد تستخدم معرّفاً نصياً في Firestore، بينما نخزن المعرف الرقمي في الحقل id/local_id.
+          final fromIdField = data['id'];
+          final fromLocalIdField = data['local_id'];
+          id = fromIdField is int
+              ? fromIdField
+              : int.tryParse(fromIdField?.toString() ?? '') ??
+                  (fromLocalIdField is int ? fromLocalIdField : int.tryParse(fromLocalIdField?.toString() ?? ''));
+          if (id == null) {
+            // لا يمكن ربط الوثيقة بسجل محلي رقمي، تجاهل بهدوء.
+            return;
+          }
+        }
+
+        localId = id.toString();
+        values = <String, dynamic>{...data, 'id': id};
+        values['created_at'] = (values['created_at'] ?? values['createdAt'] ?? nowIso).toString();
+        // تأكد من وجود updated_at دائماً
+        values['updated_at'] = (values['updated_at'] ?? values['updatedAt'] ?? nowIso).toString();
+        break;
+
+      case 'class_tuition_plans':
+      case 'tuition_plan_installments':
+      case 'tuition_payments':
+      case 'student_financial_notes':
         final id = int.tryParse(docId);
         if (id == null) return;
         localId = id.toString();
         values = <String, dynamic>{...data, 'id': id};
         values['created_at'] = (values['created_at'] ?? values['createdAt'] ?? nowIso).toString();
-        // تأكد من وجود updated_at دائماً
+        values['updated_at'] = (values['updated_at'] ?? values['updatedAt'] ?? nowIso).toString();
+        break;
+
+      case 'student_tuition_overrides':
+      case 'student_plan_discount_reasons':
+        localId = docId;
+        values = <String, dynamic>{...data};
+        values['created_at'] = (values['created_at'] ?? values['createdAt'] ?? nowIso).toString();
         values['updated_at'] = (values['updated_at'] ?? values['updatedAt'] ?? nowIso).toString();
         break;
 
@@ -430,6 +465,33 @@ class DatabaseHelper {
           values: valuesWithoutId,
           where: 'assignment_id = ? AND student_id = ?',
           whereArgs: [valuesWithoutId['assignment_id'], valuesWithoutId['student_id']],
+        );
+      } else if (tableName == 'student_tuition_overrides') {
+        final valuesWithoutId = Map<String, dynamic>.from(values);
+        valuesWithoutId.remove('id');
+        await _safeUpsert(
+          db,
+          tableName: tableName,
+          values: valuesWithoutId,
+          where: 'student_id = ? AND plan_id = ? AND installment_no = ?',
+          whereArgs: [
+            valuesWithoutId['student_id'],
+            valuesWithoutId['plan_id'],
+            valuesWithoutId['installment_no'],
+          ],
+        );
+      } else if (tableName == 'student_plan_discount_reasons') {
+        final valuesWithoutId = Map<String, dynamic>.from(values);
+        valuesWithoutId.remove('id');
+        await _safeUpsert(
+          db,
+          tableName: tableName,
+          values: valuesWithoutId,
+          where: 'student_id = ? AND plan_id = ?',
+          whereArgs: [
+            valuesWithoutId['student_id'],
+            valuesWithoutId['plan_id'],
+          ],
         );
       } else {
         await _safeUpsert(
@@ -518,11 +580,11 @@ class DatabaseHelper {
     });
   }
 
-  Future<void> markPendingOutboxAsSkippedForTables(Set<String> tableNames) async {
+  Future<void> markPendingOutboxAsSkippedForTables(core.List<String> tableNames) async {
     if (tableNames.isEmpty) return;
     final db = await database;
     final nowIso = DateTime.now().toIso8601String();
-    final placeholders = List.filled(tableNames.length, '?').join(',');
+    final placeholders = core.List.filled(tableNames.length, '?').join(',');
     await db.rawUpdate(
       "UPDATE sync_outbox SET status = 'skipped', updated_at = ? WHERE status = 'pending' AND table_name IN ($placeholders)",
       [nowIso, ...tableNames.toList()],
@@ -1970,6 +2032,11 @@ class DatabaseHelper {
         where: 'student_id = ? AND plan_id = ?',
         whereArgs: [studentId, planId],
       );
+      await _enqueueSyncOutbox(
+        tableName: 'student_plan_discount_reasons',
+        localId: '${studentId}_$planId',
+        op: 'delete',
+      );
       return;
     }
 
@@ -1984,6 +2051,18 @@ class DatabaseHelper {
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
+    await _enqueueSyncOutbox(
+      tableName: 'student_plan_discount_reasons',
+      localId: '${studentId}_$planId',
+      op: 'upsert',
+      payload: {
+        'student_id': studentId,
+        'plan_id': planId,
+        'reason': trimmed,
+        'created_at': nowIso,
+        'updated_at': nowIso,
+      },
+    );
   }
 
   Future<int> addStudentFinancialNote({
@@ -1996,6 +2075,19 @@ class DatabaseHelper {
     final id = await db.insert(
       'student_financial_notes',
       {
+        'student_id': studentId,
+        'plan_id': planId,
+        'note': note,
+        'created_at': nowIso,
+        'updated_at': nowIso,
+      },
+    );
+    await _enqueueSyncOutbox(
+      tableName: 'student_financial_notes',
+      localId: id.toString(),
+      op: 'insert',
+      payload: {
+        'id': id,
         'student_id': studentId,
         'plan_id': planId,
         'note': note,
@@ -2031,7 +2123,7 @@ class DatabaseHelper {
   }) async {
     final db = await database;
     if (studentIds.isEmpty) return {};
-    final placeholders = List.filled(studentIds.length, '?').join(',');
+    final placeholders = core.List.filled(studentIds.length, '?').join(',');
     final rows = await db.rawQuery(
       'SELECT student_id, reason FROM student_plan_discount_reasons '
       'WHERE plan_id = ? AND student_id IN ($placeholders)',
@@ -2052,7 +2144,7 @@ class DatabaseHelper {
   }) async {
     final db = await database;
     if (studentIds.isEmpty) return {};
-    final placeholders = List.filled(studentIds.length, '?').join(',');
+    final placeholders = core.List.filled(studentIds.length, '?').join(',');
     final rows = await db.rawQuery(
       'SELECT student_id, note, created_at, id FROM student_financial_notes '
       'WHERE plan_id = ? AND student_id IN ($placeholders) '
@@ -2075,7 +2167,7 @@ class DatabaseHelper {
   }) async {
     final db = await database;
     if (studentIds.isEmpty) return {};
-    final placeholders = List.filled(studentIds.length, '?').join(',');
+    final placeholders = core.List.filled(studentIds.length, '?').join(',');
     final rows = await db.rawQuery(
       'SELECT student_id, installment_no, SUM(paid_amount) AS paid_sum '
       'FROM tuition_payments '
@@ -2102,7 +2194,7 @@ class DatabaseHelper {
     final db = await database;
     if (studentIds.isEmpty) return [];
 
-    final placeholders = List.filled(studentIds.length, '?').join(',');
+    final placeholders = core.List.filled(studentIds.length, '?').join(',');
 
     // ملاحظة: نستخدم date('now') لتجاهل الوقت وإبقاء المقارنة حسب اليوم
     // بعض البيانات قد تُخزَّن بصيغة YYYY/MM/DD؛ لذلك نطبّعها إلى YYYY-MM-DD عبر replace قبل date/julianday.
@@ -2145,14 +2237,25 @@ class DatabaseHelper {
     required String note,
   }) async {
     final db = await database;
+    final nowIso = DateTime.now().toIso8601String();
     await db.update(
       'student_financial_notes',
       {
         'note': note,
-        'updated_at': DateTime.now().toIso8601String(),
+        'updated_at': nowIso,
       },
       where: 'id = ?',
       whereArgs: [noteId],
+    );
+    await _enqueueSyncOutbox(
+      tableName: 'student_financial_notes',
+      localId: noteId.toString(),
+      op: 'update',
+      payload: {
+        'id': noteId,
+        'note': note,
+        'updated_at': nowIso,
+      },
     );
   }
 
@@ -2164,6 +2267,11 @@ class DatabaseHelper {
       'student_financial_notes',
       where: 'id = ?',
       whereArgs: [noteId],
+    );
+    await _enqueueSyncOutbox(
+      tableName: 'student_financial_notes',
+      localId: noteId.toString(),
+      op: 'delete',
     );
   }
 
@@ -2594,19 +2702,19 @@ class DatabaseHelper {
       if (lectureIds.isNotEmpty) {
         await txn.delete(
           'attendance',
-          where: 'lecture_id IN (${List.filled(lectureIds.length, '?').join(',')})',
+          where: 'lecture_id IN (${core.List.filled(lectureIds.length, '?').join(',')})',
           whereArgs: lectureIds,
         );
       }
       if (studentIds.isNotEmpty) {
         await txn.delete(
           'attendance',
-          where: 'student_id IN (${List.filled(studentIds.length, '?').join(',')})',
+          where: 'student_id IN (${core.List.filled(studentIds.length, '?').join(',')})',
           whereArgs: studentIds,
         );
         await txn.delete(
           'grades',
-          where: 'student_id IN (${List.filled(studentIds.length, '?').join(',')})',
+          where: 'student_id IN (${core.List.filled(studentIds.length, '?').join(',')})',
           whereArgs: studentIds,
         );
       }
@@ -2648,14 +2756,18 @@ class DatabaseHelper {
     final saved = await db.query('students', where: 'id = ?', whereArgs: [id]);
     print('🔍 Verification - Student saved: $saved');
     
+    final payload = <String, dynamic>{
+      ...studentMap,
+      'id': id,
+    };
+    // photo_path مسار محلي على الجهاز، لا يجب مزامنته مع السحابة
+    payload.remove('photo_path');
+
     await _enqueueSyncOutbox(
       tableName: 'students',
       localId: id.toString(),
       op: 'insert',
-      payload: {
-        ...studentMap,
-        'id': id,
-      },
+      payload: payload,
     );
     return id;
   }
@@ -2723,11 +2835,15 @@ class DatabaseHelper {
       whereArgs: [student.id],
     );
     if ((student.id ?? 0) > 0) {
+      final payload = Map<String, dynamic>.from(map);
+      // photo_path مسار محلي على الجهاز، لا يجب مزامنته مع السحابة
+      payload.remove('photo_path');
+
       await _enqueueSyncOutbox(
         tableName: 'students',
         localId: student.id.toString(),
         op: 'update',
-        payload: map,
+        payload: payload,
       );
     }
     return result;
@@ -3020,7 +3136,7 @@ class DatabaseHelper {
       
       int orphanStudents = 0;
       if (classIds.isNotEmpty) {
-        final placeholders = List.filled(classIds.length, '?').join(',');
+        final placeholders = core.List.filled(classIds.length, '?').join(',');
         orphanStudents = await db.delete(
           'students',
           where: 'class_id NOT IN ($placeholders)',
@@ -3039,7 +3155,7 @@ class DatabaseHelper {
       final studentIds = (await db.query('students', columns: ['id'])).map((s) => s['id']).toList();
       int orphanGrades = 0;
       if (studentIds.isNotEmpty) {
-        final placeholders = List.filled(studentIds.length, '?').join(',');
+        final placeholders = core.List.filled(studentIds.length, '?').join(',');
         orphanGrades = await db.delete(
           'grades',
           where: 'student_id NOT IN ($placeholders)',
@@ -3057,7 +3173,7 @@ class DatabaseHelper {
       print('🔍 فحص الحضور اليتيم...');
       int orphanAttendances = 0;
       if (studentIds.isNotEmpty) {
-        final placeholders = List.filled(studentIds.length, '?').join(',');
+        final placeholders = core.List.filled(studentIds.length, '?').join(',');
         orphanAttendances = await db.delete(
           'attendance',
           where: 'student_id NOT IN ($placeholders)',
@@ -3160,8 +3276,8 @@ class DatabaseHelper {
     // الآن جلب درجة الطالب لهذا الامتحان
     final List<Map<String, dynamic>> maps = await db.query(
       'grades',
-      where: 'student_id = ? AND exam_name = ?',
-      whereArgs: [studentId, examTitle],
+      where: 'student_id = ? AND (exam_name = ? OR exam_name = ?)',
+      whereArgs: [studentId, examTitle, examId.toString()],
       limit: 1,
     );
     
@@ -3870,7 +3986,18 @@ class DatabaseHelper {
     print('📊 Note data: $noteMap');
     final id = await db.insert('notes', noteMap);
     print('✅ Note inserted with ID: $id');
-    
+
+    // مزامنة مع السحابة
+    await _enqueueSyncOutbox(
+      tableName: 'notes',
+      localId: id.toString(),
+      op: 'insert',
+      payload: {
+        ...noteMap,
+        'id': id,
+      },
+    );
+
     return id;
   }
 
@@ -3950,6 +4077,17 @@ class DatabaseHelper {
     print('📝 Inserting student note for student ${note.studentId}');
     final id = await db.insert('student_notes', noteMap);
     print('✅ Student note inserted with ID: $id');
+
+    await _enqueueSyncOutbox(
+      tableName: 'student_notes',
+      localId: id.toString(),
+      op: 'insert',
+      payload: {
+        ...noteMap,
+        'id': id,
+      },
+    );
+
     return id;
   }
 
@@ -4034,11 +4172,129 @@ class DatabaseHelper {
 
   Future<void> deleteTuitionPlanInstallment(int planId, int installmentNo) async {
     final db = await database;
+    int? installmentId;
+    try {
+      final rows = await db.query(
+        'tuition_plan_installments',
+        columns: ['id'],
+        where: 'plan_id = ? AND installment_no = ?',
+        whereArgs: [planId, installmentNo],
+        limit: 1,
+      );
+      if (rows.isNotEmpty) {
+        final v = rows.first['id'];
+        installmentId = (v is int) ? v : int.tryParse(v?.toString() ?? '');
+      }
+    } catch (_) {}
+
     await db.delete(
       'tuition_plan_installments',
       where: 'plan_id = ? AND installment_no = ?',
       whereArgs: [planId, installmentNo],
     );
+    if (installmentId != null) {
+      await _enqueueSyncOutbox(
+        tableName: 'tuition_plan_installments',
+        localId: installmentId.toString(),
+        op: 'delete',
+      );
+    }
+  }
+
+  Future<void> deleteTuitionPlanInstallmentDeep({
+    required int planId,
+    required int installmentNo,
+  }) async {
+    final db = await database;
+    final deletedPaymentIds = <int>[];
+    final deletedOverrideLocalIds = <String>[];
+
+    int? installmentId;
+    try {
+      final rows = await db.query(
+        'tuition_plan_installments',
+        columns: ['id'],
+        where: 'plan_id = ? AND installment_no = ?',
+        whereArgs: [planId, installmentNo],
+        limit: 1,
+      );
+      if (rows.isNotEmpty) {
+        final v = rows.first['id'];
+        installmentId = (v is int) ? v : int.tryParse(v?.toString() ?? '');
+      }
+    } catch (_) {}
+
+    await db.transaction((txn) async {
+      try {
+        final paymentRows = await txn.query(
+          'tuition_payments',
+          columns: ['id'],
+          where: 'plan_id = ? AND installment_no = ?',
+          whereArgs: [planId, installmentNo],
+        );
+        for (final r in paymentRows) {
+          final v = r['id'];
+          final id = (v is int) ? v : int.tryParse(v?.toString() ?? '') ?? 0;
+          if (id > 0) deletedPaymentIds.add(id);
+        }
+      } catch (_) {}
+
+      try {
+        final overrideRows = await txn.query(
+          'student_tuition_overrides',
+          columns: ['student_id'],
+          where: 'plan_id = ? AND installment_no = ?',
+          whereArgs: [planId, installmentNo],
+        );
+        for (final r in overrideRows) {
+          final v = r['student_id'];
+          final sid = (v is int) ? v : int.tryParse(v?.toString() ?? '') ?? 0;
+          if (sid > 0) deletedOverrideLocalIds.add('${sid}_${planId}_$installmentNo');
+        }
+      } catch (_) {}
+
+      await txn.delete(
+        'tuition_payments',
+        where: 'plan_id = ? AND installment_no = ?',
+        whereArgs: [planId, installmentNo],
+      );
+
+      await txn.delete(
+        'student_tuition_overrides',
+        where: 'plan_id = ? AND installment_no = ?',
+        whereArgs: [planId, installmentNo],
+      );
+
+      await txn.delete(
+        'tuition_plan_installments',
+        where: 'plan_id = ? AND installment_no = ?',
+        whereArgs: [planId, installmentNo],
+      );
+    });
+
+    for (final pid in deletedPaymentIds) {
+      await _enqueueSyncOutbox(
+        tableName: 'tuition_payments',
+        localId: pid.toString(),
+        op: 'delete',
+      );
+    }
+
+    for (final lid in deletedOverrideLocalIds) {
+      await _enqueueSyncOutbox(
+        tableName: 'student_tuition_overrides',
+        localId: lid,
+        op: 'delete',
+      );
+    }
+
+    if (installmentId != null) {
+      await _enqueueSyncOutbox(
+        tableName: 'tuition_plan_installments',
+        localId: installmentId.toString(),
+        op: 'delete',
+      );
+    }
   }
 
   Future<List<Map<String, dynamic>>> getAllTuitionPaymentsWithDetails() async {
@@ -4118,15 +4374,27 @@ class DatabaseHelper {
 
   Future<void> updateTuitionPaymentAmount(int paymentId, int newAmount, String newDate) async {
     final db = await database;
+    final nowIso = DateTime.now().toIso8601String();
     await db.update(
       'tuition_payments',
       {
         'paid_amount': newAmount,
         'payment_date': newDate,
-        'updated_at': DateTime.now().toIso8601String(),
+        'updated_at': nowIso,
       },
       where: 'id = ?',
       whereArgs: [paymentId],
+    );
+    await _enqueueSyncOutbox(
+      tableName: 'tuition_payments',
+      localId: paymentId.toString(),
+      op: 'update',
+      payload: {
+        'id': paymentId,
+        'paid_amount': newAmount,
+        'payment_date': newDate,
+        'updated_at': nowIso,
+      },
     );
   }
 
@@ -4136,6 +4404,11 @@ class DatabaseHelper {
       'tuition_payments',
       where: 'id = ?',
       whereArgs: [paymentId],
+    );
+    await _enqueueSyncOutbox(
+      tableName: 'tuition_payments',
+      localId: paymentId.toString(),
+      op: 'delete',
     );
   }
 
@@ -4158,8 +4431,11 @@ class DatabaseHelper {
     final db = await database;
     final nowIso = DateTime.now().toIso8601String();
 
-    return await db.transaction((txn) async {
-      final planId = await txn.insert('class_tuition_plans', {
+    int planId = 0;
+    final createdInstallments = <Map<String, dynamic>>[];
+
+    planId = await db.transaction((txn) async {
+      final pid = await txn.insert('class_tuition_plans', {
         'class_id': classId,
         'name': name,
         'total_amount': totalAmount,
@@ -4172,8 +4448,18 @@ class DatabaseHelper {
         final no = (inst['installment_no'] as int?) ?? 0;
         final amount = (inst['amount'] as int?) ?? 0;
         final dueDate = (inst['due_date'] ?? '').toString();
-        await txn.insert('tuition_plan_installments', {
-          'plan_id': planId,
+        final installmentId = await txn.insert('tuition_plan_installments', {
+          'plan_id': pid,
+          'installment_no': no,
+          'amount': amount,
+          'due_date': dueDate,
+          'created_at': nowIso,
+          'updated_at': nowIso,
+        });
+
+        createdInstallments.add({
+          'id': installmentId,
+          'plan_id': pid,
           'installment_no': no,
           'amount': amount,
           'due_date': dueDate,
@@ -4182,8 +4468,36 @@ class DatabaseHelper {
         });
       }
 
-      return planId;
+      return pid;
     });
+
+    await _enqueueSyncOutbox(
+      tableName: 'class_tuition_plans',
+      localId: planId.toString(),
+      op: 'insert',
+      payload: {
+        'id': planId,
+        'class_id': classId,
+        'name': name,
+        'total_amount': totalAmount,
+        'installments_count': installments.length,
+        'created_at': nowIso,
+        'updated_at': nowIso,
+      },
+    );
+
+    for (final inst in createdInstallments) {
+      final id = (inst['id'] is int) ? inst['id'] as int : int.tryParse(inst['id']?.toString() ?? '') ?? 0;
+      if (id <= 0) continue;
+      await _enqueueSyncOutbox(
+        tableName: 'tuition_plan_installments',
+        localId: id.toString(),
+        op: 'insert',
+        payload: inst,
+      );
+    }
+
+    return planId;
   }
 
   Future<Map<int, Map<int, Map<String, dynamic>>>> getStudentTuitionOverridesMap({
@@ -4192,7 +4506,7 @@ class DatabaseHelper {
   }) async {
     if (studentIds.isEmpty) return {};
     final db = await database;
-    final placeholders = List.filled(studentIds.length, '?').join(',');
+    final placeholders = core.List.filled(studentIds.length, '?').join(',');
     final rows = await db.query(
       'student_tuition_overrides',
       where: 'plan_id = ? AND student_id IN ($placeholders)',
@@ -4240,6 +4554,22 @@ class DatabaseHelper {
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
+
+    await _enqueueSyncOutbox(
+      tableName: 'student_tuition_overrides',
+      localId: '${studentId}_${planId}_$installmentNo',
+      op: 'upsert',
+      payload: {
+        'student_id': studentId,
+        'plan_id': planId,
+        'installment_no': installmentNo,
+        'amount': amount,
+        'due_date': dueDate,
+        'reason': reason,
+        'created_at': nowIso,
+        'updated_at': nowIso,
+      },
+    );
   }
 
   Future<void> deleteStudentTuitionOverride({
@@ -4252,6 +4582,11 @@ class DatabaseHelper {
       'student_tuition_overrides',
       where: 'student_id = ? AND plan_id = ? AND installment_no = ?',
       whereArgs: [studentId, planId, installmentNo],
+    );
+    await _enqueueSyncOutbox(
+      tableName: 'student_tuition_overrides',
+      localId: '${studentId}_${planId}_$installmentNo',
+      op: 'delete',
     );
   }
 
@@ -4359,7 +4694,7 @@ class DatabaseHelper {
   }) async {
     final db = await database;
     if (studentIds.isEmpty) return [];
-    final placeholders = List.filled(studentIds.length, '?').join(',');
+    final placeholders = core.List.filled(studentIds.length, '?').join(',');
     return await db.query(
       'tuition_payments',
       where: 'plan_id = ? AND student_id IN ($placeholders)',
@@ -4380,7 +4715,7 @@ class DatabaseHelper {
   }) async {
     final db = await database;
     final nowIso = DateTime.now().toIso8601String();
-    return await db.insert('tuition_payments', {
+    final id = await db.insert('tuition_payments', {
       'receipt_no': receiptNo,
       'student_id': studentId,
       'plan_id': planId,
@@ -4392,6 +4727,27 @@ class DatabaseHelper {
       'created_at': nowIso,
       'updated_at': nowIso,
     });
+
+    await _enqueueSyncOutbox(
+      tableName: 'tuition_payments',
+      localId: id.toString(),
+      op: 'insert',
+      payload: {
+        'id': id,
+        'receipt_no': receiptNo,
+        'student_id': studentId,
+        'plan_id': planId,
+        'installment_no': installmentNo,
+        'due_amount': dueAmount,
+        'paid_amount': paidAmount,
+        'payment_date': paymentDate,
+        'notes': notes,
+        'created_at': nowIso,
+        'updated_at': nowIso,
+      },
+    );
+
+    return id;
   }
 
   Future<void> deleteClassTuitionPlan(int planId) async {
@@ -4402,6 +4758,12 @@ class DatabaseHelper {
       await txn.delete('tuition_plan_installments', where: 'plan_id = ?', whereArgs: [planId]);
       await txn.delete('class_tuition_plans', where: 'id = ?', whereArgs: [planId]);
     });
+
+    await _enqueueSyncOutbox(
+      tableName: 'class_tuition_plans',
+      localId: planId.toString(),
+      op: 'delete',
+    );
   }
 
   Future<Map<int, int>> getTotalPaidByStudentIdsForTuitionPlan({
@@ -4411,7 +4773,7 @@ class DatabaseHelper {
   }) async {
     if (studentIds.isEmpty) return {};
     final db = await database;
-    final placeholders = List.filled(studentIds.length, '?').join(',');
+    final placeholders = core.List.filled(studentIds.length, '?').join(',');
 
     final args = <Object?>[planId, ...studentIds];
     var sql =
@@ -4449,8 +4811,8 @@ class DatabaseHelper {
     if (studentIds.isEmpty || planIds.isEmpty) return {};
     final db = await database;
 
-    final studentPlaceholders = List.filled(studentIds.length, '?').join(',');
-    final planPlaceholders = List.filled(planIds.length, '?').join(',');
+    final studentPlaceholders = core.List.filled(studentIds.length, '?').join(',');
+    final planPlaceholders = core.List.filled(planIds.length, '?').join(',');
 
     final args = <Object?>[...planIds, ...studentIds];
 
@@ -4488,8 +4850,8 @@ class DatabaseHelper {
     if (studentIds.isEmpty || planIds.isEmpty) return {};
     final db = await database;
 
-    final studentPlaceholders = List.filled(studentIds.length, '?').join(',');
-    final planPlaceholders = List.filled(planIds.length, '?').join(',');
+    final studentPlaceholders = core.List.filled(studentIds.length, '?').join(',');
+    final planPlaceholders = core.List.filled(planIds.length, '?').join(',');
 
     final rows = await db.rawQuery(
       'SELECT * FROM student_tuition_overrides '
@@ -4642,7 +5004,7 @@ class DatabaseHelper {
 
   Future<Map<String, dynamic>?> getClassCoursePrice(int classId, int courseId) async {
     final db = await database;
-    final List<Map<String, dynamic>> result = await db.query(
+    final core.List<Map<String, dynamic>> result = await db.query(
       'class_course_prices',
       where: 'class_id = ? AND course_id = ?',
       whereArgs: [classId, courseId],
@@ -4756,7 +5118,7 @@ class DatabaseHelper {
     if (studentIds.isEmpty) return {};
 
     final db = await database;
-    final placeholders = List.filled(studentIds.length, '?').join(',');
+    final placeholders = core.List.filled(studentIds.length, '?').join(',');
     final result = await db.rawQuery(
       'SELECT student_id, COALESCE(SUM(amount), 0) AS total_paid '
       'FROM installments '
@@ -4794,7 +5156,7 @@ class DatabaseHelper {
     if (courseId.isEmpty) return {};
 
     final db = await database;
-    final placeholders = List.filled(studentIds.length, '?').join(',');
+    final placeholders = core.List.filled(studentIds.length, '?').join(',');
     final args = <Object?>[...studentIds, courseId];
     final result = await db.rawQuery(
       'SELECT student_id, COALESCE(SUM(amount), 0) AS total_paid '
@@ -4872,7 +5234,7 @@ class DatabaseHelper {
     final db = await database;
     
     String whereClause = '';
-    List<dynamic> whereArgs = [];
+    core.List<dynamic> whereArgs = [];
     
     if (locationFilter != null && locationFilter.isNotEmpty) {
       whereClause += ' AND courses.location = ?';
@@ -4927,7 +5289,7 @@ class DatabaseHelper {
     if (studentIds.isEmpty) return <int, int>{};
     final db = await database;
 
-    final placeholders = List.filled(studentIds.length, '?').join(',');
+    final placeholders = core.List.filled(studentIds.length, '?').join(',');
     final rows = await db.rawQuery(
       '''
       SELECT installments.student_id AS student_id,
@@ -4983,7 +5345,7 @@ class DatabaseHelper {
     final db = await database;
     
     String whereClause = '';
-    List<dynamic> whereArgs = [];
+    core.List<dynamic> whereArgs = [];
     
     if (locationFilter != null && locationFilter.isNotEmpty) {
       whereClause += ' AND courses.location = ?';
@@ -5415,7 +5777,7 @@ class DatabaseHelper {
           final orphanedIds = orphanedStudents.map((s) => s['id']).whereType<int>().toList();
           if (orphanedIds.isNotEmpty) {
             await db.delete('students', where: '''
-              id IN (${List.filled(orphanedIds.length, '?').join(',')})
+              id IN (${core.List.filled(orphanedIds.length, '?').join(',')})
             ''', whereArgs: orphanedIds);
             print('✅ Cleaned orphaned students: ${orphanedIds.join(', ')}');
           }
@@ -5425,7 +5787,7 @@ class DatabaseHelper {
           final orphanedIds = orphanedLectures.map((l) => l['id']).whereType<int>().toList();
           if (orphanedIds.isNotEmpty) {
             await db.delete('lectures', where: '''
-              id IN (${List.filled(orphanedIds.length, '?').join(',')})
+              id IN (${core.List.filled(orphanedIds.length, '?').join(',')})
             ''', whereArgs: orphanedIds);
             print('✅ Cleaned orphaned lectures: ${orphanedIds.join(', ')}');
           }
@@ -5435,7 +5797,7 @@ class DatabaseHelper {
           final orphanedIds = orphanedExams.map((e) => e['id']).whereType<int>().toList();
           if (orphanedIds.isNotEmpty) {
             await db.delete('exams', where: '''
-              id IN (${List.filled(orphanedIds.length, '?').join(',')})
+              id IN (${core.List.filled(orphanedIds.length, '?').join(',')})
             ''', whereArgs: orphanedIds);
             print('✅ Cleaned orphaned exams: ${orphanedIds.join(', ')}');
           }
@@ -5504,3 +5866,4 @@ class DatabaseHelper {
     return await db.update(table, values, where: where, whereArgs: whereArgs);
   }
 }
+

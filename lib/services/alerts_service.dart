@@ -21,6 +21,13 @@ class AlertsService {
   static const String prefsKeyMonthly = 'alerts_monthly_settings_v1';
   static const String prefsSentStateKey = 'alerts_sent_state_v1';
 
+  static String _chatIdCacheKey({required String? workspaceId, required StudentModel student, required AlertsRecipient recipient}) {
+    final ws = (workspaceId ?? '').trim().isEmpty ? 'default' : workspaceId!.trim();
+    final sid = student.id?.toString() ?? '';
+    final recipientKey = (recipient == AlertsRecipient.student) ? 'student' : 'parent';
+    return 'tg_chat_id_v1|$ws|$recipientKey|$sid';
+  }
+
   static Future<void> runAutoIfEnabled({
     required String? workspaceId,
     required ClassModel classModel,
@@ -213,6 +220,15 @@ class AlertsService {
     required AlertsRecipient recipient,
   }) async {
     try {
+      // Local cache first
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final cached = prefs.getInt(_chatIdCacheKey(workspaceId: workspaceId, student: student, recipient: recipient));
+        if (cached != null && cached != 0) {
+          return cached;
+        }
+      } catch (_) {}
+
       final studentsCol = (workspaceId != null && workspaceId.trim().isNotEmpty)
           ? FirebaseFirestore.instance.collection('workspaces').doc(workspaceId).collection('students')
           : FirebaseFirestore.instance.collection('students');
@@ -291,8 +307,21 @@ class AlertsService {
           : 'telegram_parent_chat_id';
       final raw = data[field];
       if (raw == null) return null;
-      if (raw is int) return raw;
-      return int.tryParse(raw.toString());
+      int? parsed;
+      if (raw is int) {
+        parsed = raw;
+      } else {
+        parsed = int.tryParse(raw.toString());
+      }
+
+      if (parsed != null && parsed != 0) {
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setInt(_chatIdCacheKey(workspaceId: workspaceId, student: student, recipient: recipient), parsed);
+        } catch (_) {}
+      }
+
+      return parsed;
     } catch (_) {
       return null;
     }

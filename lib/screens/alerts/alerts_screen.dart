@@ -552,6 +552,20 @@ class _AlertsScreenState extends State<AlertsScreen> {
     try {
       final auth = Provider.of<AuthProvider>(context, listen: false);
       final ws = auth.workspaceId;
+
+      // Local cache first
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final wsKey = (ws ?? '').trim().isEmpty ? 'default' : ws!.trim();
+        final sidKey = student.id?.toString() ?? '';
+        final recipientKey = (recipient == AlertsRecipient.student) ? 'student' : 'parent';
+        final cacheKey = 'tg_chat_id_v1|$wsKey|$recipientKey|$sidKey';
+        final cached = prefs.getInt(cacheKey);
+        if (cached != null && cached != 0) {
+          return cached;
+        }
+      } catch (_) {}
+
       final studentsCol = (ws != null && ws.trim().isNotEmpty)
           ? FirebaseFirestore.instance.collection('workspaces').doc(ws).collection('students')
           : FirebaseFirestore.instance.collection('students');
@@ -632,8 +646,25 @@ class _AlertsScreenState extends State<AlertsScreen> {
           : 'telegram_parent_chat_id';
       final raw = data[field];
       if (raw == null) return null;
-      if (raw is int) return raw;
-      return int.tryParse(raw.toString());
+      int? parsed;
+      if (raw is int) {
+        parsed = raw;
+      } else {
+        parsed = int.tryParse(raw.toString());
+      }
+
+      if (parsed != null && parsed != 0) {
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          final wsKey = (ws ?? '').trim().isEmpty ? 'default' : ws!.trim();
+          final sidKey = student.id?.toString() ?? '';
+          final recipientKey = (recipient == AlertsRecipient.student) ? 'student' : 'parent';
+          final cacheKey = 'tg_chat_id_v1|$wsKey|$recipientKey|$sidKey';
+          await prefs.setInt(cacheKey, parsed);
+        } catch (_) {}
+      }
+
+      return parsed;
     } catch (_) {
       return null;
     }

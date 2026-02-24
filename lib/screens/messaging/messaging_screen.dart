@@ -13,6 +13,7 @@ import 'package:printing/printing.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:convert';
 import 'dart:io';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../providers/student_provider.dart';
 import '../../providers/class_provider.dart';
 import '../../models/student_model.dart';
@@ -73,7 +74,209 @@ class _MessagingScreenState extends State<MessagingScreen> {
       final endInclusive = DateTime(_endDate!.year, _endDate!.month, _endDate!.day, 23, 59, 59, 999);
       if (date.isAfter(endInclusive)) return false;
     }
+
     return true;
+  }
+
+  String _telegramChatIdCacheKey({required String? workspaceId, required StudentModel student}) {
+    final ws = (workspaceId ?? '').trim().isEmpty ? 'default' : workspaceId!.trim();
+    final sid = student.id?.toString() ?? '';
+    final recipientKey = (_selectedRecipient == 'student') ? 'student' : 'parent';
+    return 'tg_chat_id_v1|$ws|$recipientKey|$sid';
+  }
+
+  Future<String?> _createCombinedSelectedStudentsFile(core.List<StudentModel> students) async {
+    if (_selectedClass == null) return null;
+    if (_selectedFile == null || _selectedFile == 'لا يوجد ملف') return null;
+    if (students.isEmpty) return null;
+
+    try {
+      final ttf = await PdfGoogleFonts.cairoRegular();
+      final ttfBold = await PdfGoogleFonts.cairoBold();
+      final pdf = pw.Document();
+      final className = _selectedClass!.name;
+
+      switch (_selectedFile) {
+        case 'معلومات الطالب':
+          pdf.addPage(
+            pw.MultiPage(
+              textDirection: pw.TextDirection.rtl,
+              pageFormat: PdfPageFormat.a4,
+              build: (pw.Context context) {
+                return [
+                  pw.Container(
+                    width: double.infinity,
+                    padding: const pw.EdgeInsets.all(12),
+                    decoration: pw.BoxDecoration(
+                      color: PdfColors.blue100,
+                      borderRadius: pw.BorderRadius.circular(8),
+                    ),
+                    child: pw.Column(
+                      children: [
+                        pw.Text(className, style: pw.TextStyle(fontSize: 24, fontWeight: pw.FontWeight.bold, font: ttfBold), textAlign: pw.TextAlign.center, textDirection: pw.TextDirection.rtl),
+                        pw.SizedBox(height: 4),
+                        pw.Text('معلومات الطلاب', style: pw.TextStyle(fontSize: 18, font: ttf), textAlign: pw.TextAlign.center, textDirection: pw.TextDirection.rtl),
+                      ],
+                    ),
+                  ),
+                  pw.SizedBox(height: 20),
+                  pw.Table(
+                    border: pw.TableBorder.all(color: PdfColors.grey),
+                    children: [
+                      pw.TableRow(
+                        decoration: const pw.BoxDecoration(color: PdfColors.blue),
+                        children: [
+                          pw.Padding(padding: const pw.EdgeInsets.all(8), child: pw.Text('اسم الطالب', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, font: ttfBold, color: PdfColors.white), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+                          pw.Padding(padding: const pw.EdgeInsets.all(8), child: pw.Text('ID', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, font: ttfBold, color: PdfColors.white), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+                          pw.Padding(padding: const pw.EdgeInsets.all(8), child: pw.Text('رقم الطالب', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, font: ttfBold, color: PdfColors.white), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+                          pw.Padding(padding: const pw.EdgeInsets.all(8), child: pw.Text('الإيميل', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, font: ttfBold, color: PdfColors.white), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+                          pw.Padding(padding: const pw.EdgeInsets.all(8), child: pw.Text('اسم ولي الأمر', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, font: ttfBold, color: PdfColors.white), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+                          pw.Padding(padding: const pw.EdgeInsets.all(8), child: pw.Text('رقم ولي الأمر', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, font: ttfBold, color: PdfColors.white), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+                          pw.Padding(padding: const pw.EdgeInsets.all(8), child: pw.Text('إيميل ولي الأمر', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, font: ttfBold, color: PdfColors.white), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+                        ],
+                      ),
+                      ...students.map((student) {
+                        return pw.TableRow(
+                          children: [
+                            pw.Padding(padding: const pw.EdgeInsets.all(8), child: pw.Text(student.name, style: pw.TextStyle(font: ttf), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+                            pw.Padding(padding: const pw.EdgeInsets.all(8), child: pw.Text(student.studentId ?? '-', style: pw.TextStyle(font: ttf), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+                            pw.Padding(padding: const pw.EdgeInsets.all(8), child: pw.Text(student.phone ?? '-', style: pw.TextStyle(font: ttf), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+                            pw.Padding(padding: const pw.EdgeInsets.all(8), child: pw.Text(student.email ?? '-', style: pw.TextStyle(font: ttf), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+                            pw.Padding(padding: const pw.EdgeInsets.all(8), child: pw.Text(student.primaryGuardian?.name ?? student.parentPhone ?? '-', style: pw.TextStyle(font: ttf), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+                            pw.Padding(padding: const pw.EdgeInsets.all(8), child: pw.Text(student.primaryGuardian?.phone ?? student.parentPhone ?? '-', style: pw.TextStyle(font: ttf), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+                            pw.Padding(padding: const pw.EdgeInsets.all(8), child: pw.Text(student.primaryGuardian?.email ?? student.parentEmail ?? '-', style: pw.TextStyle(font: ttf), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+                          ],
+                        );
+                      }).toList(),
+                    ],
+                  ),
+                ];
+              },
+            ),
+          );
+          break;
+
+        case 'ملخص الحضور':
+          final allLectures = await _dbHelper.getLecturesByClass(_selectedClass!.id!);
+          final lectures = allLectures.where((l) => _isDateInRange(l.date)).toList();
+          if (lectures.isEmpty) return null;
+
+          final Map<int, Map<String, int>> attendanceStats = {};
+          for (final s in students) {
+            int present = 0, absent = 0, late = 0, expelled = 0, excused = 0;
+            for (final lecture in lectures) {
+              final attendance = await _dbHelper.getAttendanceByStudentAndLecture(
+                studentId: s.id!,
+                lectureId: lecture.id!,
+              );
+
+              if (attendance != null) {
+                switch (attendance.status) {
+                  case AttendanceStatus.present:
+                    present++;
+                    break;
+                  case AttendanceStatus.absent:
+                    absent++;
+                    break;
+                  case AttendanceStatus.late:
+                    late++;
+                    break;
+                  case AttendanceStatus.expelled:
+                    expelled++;
+                    break;
+                  case AttendanceStatus.excused:
+                    excused++;
+                    break;
+                }
+              }
+            }
+
+            attendanceStats[s.id!] = {
+              'present': present,
+              'absent': absent,
+              'late': late,
+              'expelled': expelled,
+              'excused': excused,
+              'total': lectures.length,
+            };
+          }
+
+          pdf.addPage(
+            pw.MultiPage(
+              textDirection: pw.TextDirection.rtl,
+              pageFormat: PdfPageFormat.a4,
+              build: (pw.Context context) {
+                return [
+                  pw.Container(
+                    width: double.infinity,
+                    padding: const pw.EdgeInsets.all(12),
+                    decoration: pw.BoxDecoration(
+                      color: PdfColors.orange100,
+                      borderRadius: pw.BorderRadius.circular(8),
+                    ),
+                    child: pw.Column(
+                      children: [
+                        pw.Text(className, style: pw.TextStyle(fontSize: 24, fontWeight: pw.FontWeight.bold, font: ttfBold), textAlign: pw.TextAlign.center, textDirection: pw.TextDirection.rtl),
+                        pw.SizedBox(height: 4),
+                        pw.Text('ملخص الحضور', style: pw.TextStyle(fontSize: 18, font: ttf), textAlign: pw.TextAlign.center, textDirection: pw.TextDirection.rtl),
+                      ],
+                    ),
+                  ),
+                  pw.SizedBox(height: 20),
+                  pw.Table(
+                    border: pw.TableBorder.all(color: PdfColors.grey),
+                    children: [
+                      pw.TableRow(
+                        decoration: const pw.BoxDecoration(color: PdfColors.blue),
+                        children: [
+                          pw.Padding(padding: const pw.EdgeInsets.all(8), child: pw.Text('اسم الطالب', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, font: ttfBold, color: PdfColors.white), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+                          pw.Padding(padding: const pw.EdgeInsets.all(8), child: pw.Text('عدد المحاضرات', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, font: ttfBold, color: PdfColors.white), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+                          pw.Padding(padding: const pw.EdgeInsets.all(8), child: pw.Text('الحضور', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, font: ttfBold, color: PdfColors.white), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+                          pw.Padding(padding: const pw.EdgeInsets.all(8), child: pw.Text('الغياب', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, font: ttfBold, color: PdfColors.white), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+                          pw.Padding(padding: const pw.EdgeInsets.all(8), child: pw.Text('التأخر', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, font: ttfBold, color: PdfColors.white), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+                          pw.Padding(padding: const pw.EdgeInsets.all(8), child: pw.Text('مجاز', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, font: ttfBold, color: PdfColors.white), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+                          pw.Padding(padding: const pw.EdgeInsets.all(8), child: pw.Text('الطرد', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, font: ttfBold, color: PdfColors.white), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+                          pw.Padding(padding: const pw.EdgeInsets.all(8), child: pw.Text('النسبة %', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, font: ttfBold, color: PdfColors.white), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+                        ],
+                      ),
+                      ...students.map((student) {
+                        final stats = attendanceStats[student.id!]!;
+                        final percentage = stats['total']! > 0
+                            ? ((stats['present']! / stats['total']!) * 100).round()
+                            : 0;
+                        return pw.TableRow(
+                          children: [
+                            pw.Padding(padding: const pw.EdgeInsets.all(8), child: pw.Text(student.name, style: pw.TextStyle(font: ttf), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+                            pw.Padding(padding: const pw.EdgeInsets.all(8), child: pw.Text('${stats['total']}', style: pw.TextStyle(font: ttf), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+                            pw.Padding(padding: const pw.EdgeInsets.all(8), child: pw.Text('${stats['present']}', style: pw.TextStyle(font: ttf), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+                            pw.Padding(padding: const pw.EdgeInsets.all(8), child: pw.Text('${stats['absent']}', style: pw.TextStyle(font: ttf), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+                            pw.Padding(padding: const pw.EdgeInsets.all(8), child: pw.Text('${stats['late']}', style: pw.TextStyle(font: ttf), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+                            pw.Padding(padding: const pw.EdgeInsets.all(8), child: pw.Text('${stats['excused']}', style: pw.TextStyle(font: ttf), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+                            pw.Padding(padding: const pw.EdgeInsets.all(8), child: pw.Text('${stats['expelled']}', style: pw.TextStyle(font: ttf), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+                            pw.Padding(padding: const pw.EdgeInsets.all(8), child: pw.Text('$percentage%', style: pw.TextStyle(font: ttf), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+                          ],
+                        );
+                      }).toList(),
+                    ],
+                  ),
+                ];
+              },
+            ),
+          );
+          break;
+
+        default:
+          return null;
+      }
+
+      final directory = await getApplicationDocumentsDirectory();
+      final fileName = '${_selectedFile}_selected_students.pdf';
+      final file = File('${directory.path}/$fileName');
+      await file.writeAsBytes(await pdf.save());
+      return file.path;
+    } catch (_) {
+      return null;
+    }
   }
 
   String _assignmentStatusLabel(String raw) {
@@ -558,18 +761,218 @@ class _MessagingScreenState extends State<MessagingScreen> {
   // سيتم استخدام نفس الدوال بالضبط من صفحة export_files_screen.dart
   
   Future<String?> _exportAttendanceSummary() async {
-    // نفس الدالة من صفحة التصدير
     if (_selectedClass == null) return null;
 
     try {
       final students = await _dbHelper.getStudentsByClass(_selectedClass!.id!);
       if (students.isEmpty) return null;
+
+      final allLectures = await _dbHelper.getLecturesByClass(_selectedClass!.id!);
+      final lectures = allLectures.where((l) => _isDateInRange(l.date)).toList();
+      if (lectures.isEmpty) return null;
+
+      // حساب إحصائيات الحضور لكل طالب
+      Map<int, Map<String, int>> attendanceStats = {};
+
+      for (var student in students) {
+        int present = 0, absent = 0, late = 0, expelled = 0, excused = 0;
+
+        for (var lecture in lectures) {
+          final attendance = await _dbHelper.getAttendanceByStudentAndLecture(
+            studentId: student.id!,
+            lectureId: lecture.id!,
+          );
+
+          if (attendance != null) {
+            switch (attendance.status) {
+              case AttendanceStatus.present:
+                present++;
+                break;
+              case AttendanceStatus.absent:
+                absent++;
+                break;
+              case AttendanceStatus.late:
+                late++;
+                break;
+              case AttendanceStatus.expelled:
+                expelled++;
+                break;
+              case AttendanceStatus.excused:
+                excused++;
+                break;
+            }
+          }
+        }
+
+        attendanceStats[student.id!] = {
+          'present': present,
+          'absent': absent,
+          'late': late,
+          'expelled': expelled,
+          'excused': excused,
+          'total': lectures.length,
+        };
+      }
       
       final ttf = await PdfGoogleFonts.cairoRegular();
       final ttfBold = await PdfGoogleFonts.cairoBold();
       final pdf = pw.Document();
       final className = _selectedClass!.name;
 
+      pdf.addPage(
+        pw.MultiPage(
+          textDirection: pw.TextDirection.rtl,
+          pageFormat: PdfPageFormat.a4,
+          build: (pw.Context context) {
+            return [
+              // العنوان
+              pw.Container(
+                width: double.infinity,
+                padding: const pw.EdgeInsets.all(12),
+                decoration: pw.BoxDecoration(
+                  color: PdfColors.blue100,
+                  borderRadius: pw.BorderRadius.circular(8),
+                ),
+                child: pw.Column(
+                  children: [
+                    pw.Text(
+                      className,
+                      style: pw.TextStyle(fontSize: 24, fontWeight: pw.FontWeight.bold, font: ttfBold),
+                      textAlign: pw.TextAlign.center,
+                      textDirection: pw.TextDirection.rtl,
+                    ),
+                    pw.SizedBox(height: 4),
+                    pw.Text(
+                      'ملخص الحضور',
+                      style: pw.TextStyle(fontSize: 18, font: ttf),
+                      textAlign: pw.TextAlign.center,
+                      textDirection: pw.TextDirection.rtl,
+                    ),
+                  ],
+                ),
+              ),
+              pw.SizedBox(height: 20),
+              
+              // جدول الطلاب
+              pw.Table(
+                border: pw.TableBorder.all(color: PdfColors.grey),
+                children: [
+                  // رأس الجدول
+                  pw.TableRow(
+                    decoration: const pw.BoxDecoration(color: PdfColors.blue),
+                    children: [
+                      pw.Padding(
+                        padding: const pw.EdgeInsets.all(8),
+                        child: pw.Text('اسم الطالب', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, font: ttfBold, color: PdfColors.white), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center),
+                      ),
+                      pw.Padding(
+                        padding: const pw.EdgeInsets.all(8),
+                        child: pw.Text('عدد المحاضرات', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, font: ttfBold, color: PdfColors.white), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center),
+                      ),
+                      pw.Padding(
+                        padding: const pw.EdgeInsets.all(8),
+                        child: pw.Text('الحضور', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, font: ttfBold, color: PdfColors.white), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center),
+                      ),
+                      pw.Padding(
+                        padding: const pw.EdgeInsets.all(8),
+                        child: pw.Text('الغياب', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, font: ttfBold, color: PdfColors.white), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center),
+                      ),
+                      pw.Padding(
+                        padding: const pw.EdgeInsets.all(8),
+                        child: pw.Text('التأخر', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, font: ttfBold, color: PdfColors.white), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center),
+                      ),
+                      pw.Padding(
+                        padding: const pw.EdgeInsets.all(8),
+                        child: pw.Text('مجاز', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, font: ttfBold, color: PdfColors.white), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center),
+                      ),
+                      pw.Padding(
+                        padding: const pw.EdgeInsets.all(8),
+                        child: pw.Text('الطرد', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, font: ttfBold, color: PdfColors.white), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center),
+                      ),
+                      pw.Padding(
+                        padding: const pw.EdgeInsets.all(8),
+                        child: pw.Text('النسبة %', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, font: ttfBold, color: PdfColors.white), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center),
+                      ),
+                    ],
+                  ),
+                  // بيانات الطلاب
+                  ...students.map((student) {
+                    final stats = attendanceStats[student.id!]!;
+                    final percentage = stats['total']! > 0
+                        ? ((stats['present']! / stats['total']!) * 100).round()
+                        : 0;
+                    return pw.TableRow(
+                      children: [
+                        pw.Padding(
+                          padding: const pw.EdgeInsets.all(8),
+                          child: pw.Text(student.name, style: pw.TextStyle(font: ttf), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center),
+                        ),
+                        pw.Padding(
+                          padding: const pw.EdgeInsets.all(8),
+                          child: pw.Text('${stats['total']}', style: pw.TextStyle(font: ttf), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center),
+                        ),
+                        pw.Padding(
+                          padding: const pw.EdgeInsets.all(8),
+                          child: pw.Text('${stats['present']}', style: pw.TextStyle(font: ttf), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center),
+                        ),
+                        pw.Padding(
+                          padding: const pw.EdgeInsets.all(8),
+                          child: pw.Text('${stats['absent']}', style: pw.TextStyle(font: ttf), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center),
+                        ),
+                        pw.Padding(
+                          padding: const pw.EdgeInsets.all(8),
+                          child: pw.Text('${stats['late']}', style: pw.TextStyle(font: ttf), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center),
+                        ),
+                        pw.Padding(
+                          padding: const pw.EdgeInsets.all(8),
+                          child: pw.Text('${stats['excused']}', style: pw.TextStyle(font: ttf), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center),
+                        ),
+                        pw.Padding(
+                          padding: const pw.EdgeInsets.all(8),
+                          child: pw.Text('${stats['expelled']}', style: pw.TextStyle(font: ttf), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center),
+                        ),
+                        pw.Padding(
+                          padding: const pw.EdgeInsets.all(8),
+                          child: pw.Text('$percentage%', style: pw.TextStyle(font: ttf), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center),
+                        ),
+                      ],
+                    );
+                  }).toList(),
+                ],
+              ),
+            ];
+          },
+        ),
+      );
+
+      // حفظ الملف
+      final directory = await getApplicationDocumentsDirectory();
+      final fileName = '${className}_ملخص_الحضور.pdf';
+      final file = File('${directory.path}/$fileName');
+      await file.writeAsBytes(await pdf.save());
+      
+      return file.path;
+    } catch (e) {
+      print('Error exporting attendance summary: $e');
+      return null;
+    }
+  }
+
+  // دالة تصدير معلومات الطالب
+  Future<String?> _exportStudentInfo() async {
+    if (_selectedClass == null) return null;
+
+    try {
+      final students = await _dbHelper.getStudentsByClass(_selectedClass!.id!);
+      if (students.isEmpty) return null;
+
+      // تحميل الخطوط العربية
+      final ttf = await PdfGoogleFonts.cairoRegular();
+      final ttfBold = await PdfGoogleFonts.cairoBold();
+
+      final pdf = pw.Document();
+      final className = _selectedClass!.name;
+      
       pdf.addPage(
         pw.MultiPage(
           textDirection: pw.TextDirection.rtl,
@@ -604,7 +1007,7 @@ class _MessagingScreenState extends State<MessagingScreen> {
               ),
               pw.SizedBox(height: 20),
               
-              // جدول الطلاب
+              // جدول ملخص الحضور
               pw.Table(
                 border: pw.TableBorder.all(color: PdfColors.grey),
                 children: [
@@ -687,207 +1090,6 @@ class _MessagingScreenState extends State<MessagingScreen> {
       // حفظ الملف
       final directory = await getApplicationDocumentsDirectory();
       final fileName = '${className}_معلومات_الطلاب.pdf';
-      final file = File('${directory.path}/$fileName');
-      await file.writeAsBytes(await pdf.save());
-      
-      return file.path;
-    } catch (e) {
-      print('Error exporting student info: $e');
-      return null;
-    }
-  }
-
-  // دالة تصدير معلومات الطالب
-  Future<String?> _exportStudentInfo() async {
-    if (_selectedClass == null) return null;
-
-    try {
-      final students = await _dbHelper.getStudentsByClass(_selectedClass!.id!);
-      if (students.isEmpty) return null;
-
-      // تحميل المحاضرات
-      final allLectures = await _dbHelper.getLecturesByClass(_selectedClass!.id!);
-      final lectures = allLectures.where((l) => _isDateInRange(l.date)).toList();
-      if (lectures.isEmpty) return null;
-
-      // حساب إحصائيات الحضور لكل طالب
-      Map<int, Map<String, int>> attendanceStats = {};
-      
-      for (var student in students) {
-        int present = 0, absent = 0, late = 0, expelled = 0, excused = 0;
-        
-        for (var lecture in lectures) {
-          final attendance = await _dbHelper.getAttendanceByStudentAndLecture(
-            studentId: student.id!,
-            lectureId: lecture.id!,
-          );
-          
-          if (attendance != null) {
-            switch (attendance.status) {
-              case AttendanceStatus.present:
-                present++;
-                break;
-              case AttendanceStatus.absent:
-                absent++;
-                break;
-              case AttendanceStatus.late:
-                late++;
-                break;
-              case AttendanceStatus.expelled:
-                expelled++;
-                break;
-              case AttendanceStatus.excused:
-                excused++;
-                break;
-            }
-          }
-        }
-        
-        attendanceStats[student.id!] = {
-          'present': present,
-          'absent': absent,
-          'late': late,
-          'expelled': expelled,
-          'excused': excused,
-          'total': lectures.length,
-        };
-      }
-
-      // تحميل الخطوط العربية
-      final ttf = await PdfGoogleFonts.cairoRegular();
-      final ttfBold = await PdfGoogleFonts.cairoBold();
-
-      final pdf = pw.Document();
-      final className = _selectedClass!.name;
-      
-      pdf.addPage(
-        pw.MultiPage(
-          textDirection: pw.TextDirection.rtl,
-          pageFormat: PdfPageFormat.a4,
-          build: (pw.Context context) {
-            return [
-              // العنوان
-              pw.Container(
-                width: double.infinity,
-                padding: const pw.EdgeInsets.all(12),
-                decoration: pw.BoxDecoration(
-                  color: PdfColors.orange100,
-                  borderRadius: pw.BorderRadius.circular(8),
-                ),
-                child: pw.Column(
-                  children: [
-                    pw.Text(
-                      className,
-                      style: pw.TextStyle(fontSize: 24, fontWeight: pw.FontWeight.bold, font: ttfBold),
-                      textAlign: pw.TextAlign.center,
-                      textDirection: pw.TextDirection.rtl,
-                    ),
-                    pw.SizedBox(height: 4),
-                    pw.Text(
-                      'ملخص الحضور',
-                      style: pw.TextStyle(fontSize: 18, font: ttf),
-                      textAlign: pw.TextAlign.center,
-                      textDirection: pw.TextDirection.rtl,
-                    ),
-                  ],
-                ),
-              ),
-              pw.SizedBox(height: 20),
-              
-              // جدول ملخص الحضور
-              pw.Table(
-                border: pw.TableBorder.all(color: PdfColors.grey),
-                children: [
-                  // رأس الجدول
-                  pw.TableRow(
-                    decoration: const pw.BoxDecoration(color: PdfColors.blue),
-                    children: [
-                      pw.Padding(
-                        padding: const pw.EdgeInsets.all(8),
-                        child: pw.Text('اسم الطالب', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, font: ttfBold, color: PdfColors.white), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center),
-                      ),
-                      pw.Padding(
-                        padding: const pw.EdgeInsets.all(8),
-                        child: pw.Text('عدد المحاضرات', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, font: ttfBold, color: PdfColors.white), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center),
-                      ),
-                      pw.Padding(
-                        padding: const pw.EdgeInsets.all(8),
-                        child: pw.Text('الحضور', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, font: ttfBold, color: PdfColors.white), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center),
-                      ),
-                      pw.Padding(
-                        padding: const pw.EdgeInsets.all(8),
-                        child: pw.Text('الغياب', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, font: ttfBold, color: PdfColors.white), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center),
-                      ),
-                      pw.Padding(
-                        padding: const pw.EdgeInsets.all(8),
-                        child: pw.Text('التأخر', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, font: ttfBold, color: PdfColors.white), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center),
-                      ),
-                      pw.Padding(
-                        padding: const pw.EdgeInsets.all(8),
-                        child: pw.Text('مجاز', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, font: ttfBold, color: PdfColors.white), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center),
-                      ),
-                      pw.Padding(
-                        padding: const pw.EdgeInsets.all(8),
-                        child: pw.Text('الطرد', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, font: ttfBold, color: PdfColors.white), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center),
-                      ),
-                      pw.Padding(
-                        padding: const pw.EdgeInsets.all(8),
-                        child: pw.Text('النسبة %', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, font: ttfBold, color: PdfColors.white), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center),
-                      ),
-                    ],
-                  ),
-                  // بيانات الطلاب
-                  ...students.map((student) {
-                    final stats = attendanceStats[student.id!]!;
-                    final percentage = stats['total']! > 0 ? ((stats['present']! / stats['total']!) * 100).round() : 0;
-                    
-                    return pw.TableRow(
-                      children: [
-                        pw.Padding(
-                          padding: const pw.EdgeInsets.all(8),
-                          child: pw.Text(student.name, style: pw.TextStyle(font: ttf), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center),
-                        ),
-                        pw.Padding(
-                          padding: const pw.EdgeInsets.all(8),
-                          child: pw.Text('${stats['total']}', style: pw.TextStyle(font: ttf), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center),
-                        ),
-                        pw.Padding(
-                          padding: const pw.EdgeInsets.all(8),
-                          child: pw.Text('${stats['present']}', style: pw.TextStyle(font: ttf), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center),
-                        ),
-                        pw.Padding(
-                          padding: const pw.EdgeInsets.all(8),
-                          child: pw.Text('${stats['absent']}', style: pw.TextStyle(font: ttf), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center),
-                        ),
-                        pw.Padding(
-                          padding: const pw.EdgeInsets.all(8),
-                          child: pw.Text('${stats['late']}', style: pw.TextStyle(font: ttf), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center),
-                        ),
-                        pw.Padding(
-                          padding: const pw.EdgeInsets.all(8),
-                          child: pw.Text('${stats['excused']}', style: pw.TextStyle(font: ttf), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center),
-                        ),
-                        pw.Padding(
-                          padding: const pw.EdgeInsets.all(8),
-                          child: pw.Text('${stats['expelled']}', style: pw.TextStyle(font: ttf), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center),
-                        ),
-                        pw.Padding(
-                          padding: const pw.EdgeInsets.all(8),
-                          child: pw.Text('$percentage%', style: pw.TextStyle(font: ttf), textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center),
-                        ),
-                      ],
-                    );
-                  }).toList(),
-                ],
-              ),
-            ];
-          },
-        ),
-      );
-
-      // حفظ الملف
-      final directory = await getApplicationDocumentsDirectory();
-      final fileName = '${className}_ملخص_الحضور.pdf';
       final file = File('${directory.path}/$fileName');
       await file.writeAsBytes(await pdf.save());
       
@@ -1490,6 +1692,16 @@ class _MessagingScreenState extends State<MessagingScreen> {
     try {
       final auth = Provider.of<AuthProvider>(context, listen: false);
       final ws = auth.workspaceId;
+
+      // Local cache first (prevents intermittent false "not linked")
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final cached = prefs.getInt(_telegramChatIdCacheKey(workspaceId: ws, student: student));
+        if (cached != null && cached != 0) {
+          return cached;
+        }
+      } catch (_) {}
+
       final studentsCol = (ws != null && ws.trim().isNotEmpty)
           ? FirebaseFirestore.instance.collection('workspaces').doc(ws).collection('students')
           : FirebaseFirestore.instance.collection('students');
@@ -1571,8 +1783,20 @@ class _MessagingScreenState extends State<MessagingScreen> {
       final field = (_selectedRecipient == 'student') ? 'telegram_student_chat_id' : 'telegram_parent_chat_id';
       final raw = data[field];
       if (raw == null) return null;
-      if (raw is int) return raw;
-      return int.tryParse(raw.toString());
+      int? parsed;
+      if (raw is int) {
+        parsed = raw;
+      } else {
+        parsed = int.tryParse(raw.toString());
+      }
+
+      if (parsed != null && parsed != 0) {
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setInt(_telegramChatIdCacheKey(workspaceId: ws, student: student), parsed);
+        } catch (_) {}
+      }
+      return parsed;
     } catch (_) {
       return null;
     }
@@ -1644,7 +1868,7 @@ class _MessagingScreenState extends State<MessagingScreen> {
       return;
     }
 
-    if (_exportedFilePath == null || _exportedFilePath!.trim().isEmpty) {
+    if (_deviceAttachmentSelected && (_exportedFilePath == null || _exportedFilePath!.trim().isEmpty)) {
       await BotApiService.sendTelegramText(chatId: chatId, text: messageText);
       return;
     }
@@ -1657,6 +1881,20 @@ class _MessagingScreenState extends State<MessagingScreen> {
         return;
       }
       fileToSend = File(studentPath);
+    } else if (isGroup && !_deviceAttachmentSelected && _selectedStudents.isNotEmpty) {
+      final selected = <StudentModel>[];
+      for (final sid in _selectedStudents) {
+        try {
+          selected.add(_students.firstWhere((s) => (s.id?.toString() ?? '') == sid));
+        } catch (_) {}
+      }
+
+      final combinedPath = await _createCombinedSelectedStudentsFile(selected);
+      if (combinedPath == null || combinedPath.trim().isEmpty) {
+        await BotApiService.sendTelegramText(chatId: chatId, text: messageText);
+        return;
+      }
+      fileToSend = File(combinedPath);
     } else {
       fileToSend = File(_exportedFilePath!);
     }
@@ -2410,30 +2648,34 @@ class _MessagingScreenState extends State<MessagingScreen> {
           break;
 
         case 'الامتحانات':
-          // تحميل درجات الامتحانات للطالب
-          final studentExams = await _dbHelper.getGradesByStudent(student.id!);
-          core.List<Map<String, dynamic>> examGrades = [];
-          
-          for (var grade in studentExams) {
-            final exam = await _resolveExamForGrade(grade);
-            if (exam == null) continue;
-            if (!_isDateInRange(exam.date)) continue;
-            if (exam != null) {
-              final statusText = grade.status?.toString().trim() ?? 'حاضر';
-              final isExemptOrPostponed =
-                  statusText == 'معفئ' || statusText == 'مؤجل' || statusText == 'معفئ او مؤجل';
-              examGrades.add({
-                'date': '${exam.date.day}/${exam.date.month}/${exam.date.year}',
-                'exam': exam.title,
-                'status': isExemptOrPostponed ? 'معفئ او مؤجل' : statusText,
-                'grade': isExemptOrPostponed ? '' : grade.score.toStringAsFixed(1),
-                'max': exam.maxScore.toStringAsFixed(1),
-                'percentage': isExemptOrPostponed ? '' : ((grade.score / exam.maxScore) * 100).toStringAsFixed(1),
-              });
-            }
-          }
+          // عرض الامتحانات من جدول exams حتى لو لا توجد درجات بعد.
+          final allExams = await _dbHelper.getExamsByClass(_selectedClass!.id!);
+          final exams = allExams.where((e) => _isDateInRange(e.date)).toList();
+          if (exams.isEmpty) return null;
 
-          if (examGrades.isEmpty) return null;
+          core.List<Map<String, dynamic>> examGrades = [];
+          for (final exam in exams) {
+            final gradeInfo = await _dbHelper.getStudentGradeForExam(student.id!, exam.id!);
+            final statusText = (gradeInfo?.status?.toString().trim().isNotEmpty == true)
+                ? gradeInfo!.status!.toString().trim()
+                : '-';
+            final isExemptOrPostponed = statusText == 'معفئ' || statusText == 'مؤجل' || statusText == 'معفئ او مؤجل';
+
+            final obtained = gradeInfo?.obtainedMarks;
+            final total = gradeInfo?.totalMarks ?? exam.maxScore;
+            final percentage = (obtained != null && total > 0)
+                ? ((obtained / total) * 100).toStringAsFixed(1)
+                : '';
+
+            examGrades.add({
+              'date': '${exam.date.day}/${exam.date.month}/${exam.date.year}',
+              'exam': exam.title,
+              'status': isExemptOrPostponed ? 'معفئ او مؤجل' : statusText,
+              'grade': (obtained == null || isExemptOrPostponed) ? '' : obtained.toStringAsFixed(1),
+              'max': total.toStringAsFixed(1),
+              'percentage': (obtained == null || isExemptOrPostponed) ? '' : percentage,
+            });
+          }
 
           pdf.addPage(
             pw.MultiPage(
