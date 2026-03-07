@@ -381,11 +381,11 @@ def send_document_endpoint():
     if not TELEGRAM_API:
         return jsonify({"status": "error", "message": "BOT_TOKEN not configured"}), 500
 
-    chat_id = request.form.get("chat_id")
-    caption = request.form.get("caption")
-    uploaded = request.files.get("file")
-    if not chat_id or uploaded is None:
-        return jsonify({"status": "error", "message": "chat_id and file are required"}), 400
+    chat_id = request.form.get("chat_id") or request.args.get("chat_id")
+    caption = request.form.get("caption") or request.args.get("caption")
+    uploaded = request.files.get("document") or request.files.get("file")
+    if not chat_id or not uploaded:
+        return jsonify({"status": "error", "message": "missing chat_id or document"}), 400
 
     # Save to a temp file then send
     tmp_dir = os.getenv("TMPDIR") or "/tmp"

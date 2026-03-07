@@ -85,6 +85,17 @@ class _MessagingScreenState extends State<MessagingScreen> {
     return 'tg_chat_id_v1|$ws|$recipientKey|$sid';
   }
 
+  String _telegramChatIdCacheKeyForRecipient({
+    required String? workspaceId,
+    required StudentModel student,
+    required String recipientType,
+  }) {
+    final ws = (workspaceId ?? '').trim().isEmpty ? 'default' : workspaceId!.trim();
+    final sid = student.id?.toString() ?? '';
+    final recipientKey = (recipientType == 'student') ? 'student' : 'parent';
+    return 'tg_chat_id_v1|$ws|$recipientKey|$sid';
+  }
+
   Future<String?> _createCombinedSelectedStudentsFile(core.List<StudentModel> students) async {
     if (_selectedClass == null) return null;
     if (_selectedFile == null || _selectedFile == 'لا يوجد ملف') return null;
@@ -607,6 +618,7 @@ class _MessagingScreenState extends State<MessagingScreen> {
   @override
   void initState() {
     super.initState();
+    _selectedRecipient ??= 'student';
     _loadAvailableFiles();
     _searchController.addListener(_filterStudents);
     
@@ -673,7 +685,7 @@ class _MessagingScreenState extends State<MessagingScreen> {
         'الدرجة النهائية',
         'ملخص الطالب',
         'واجبات الطالب',
-        'البيانات المالية',
+        'المعلومات المالية',
         'الطلاب المتأخرين بالدفع',
         'سجل الدفعات',
       };
@@ -695,31 +707,39 @@ class _MessagingScreenState extends State<MessagingScreen> {
         case 'الامتحانات':
         case 'الدرجة النهائية':
         case 'واجبات الطالب':
-        case 'البيانات المالية':
+        case 'المعلومات المالية':
         case 'الطلاب المتأخرين بالدفع':
         case 'سجل الدفعات':
-          // Student-specific exports need selecting exactly one student.
           if (studentSpecificTypes.contains(fileType)) {
-            if (_selectedStudents.length != 1) {
-              _showErrorDialog('يرجى اختيار طالب واحد لإنشاء هذا الملف');
-              return;
+            if (_selectedStudents.length == 1) {
+              final selectedIdStr = _selectedStudents.first;
+              StudentModel? selectedStudent;
+              try {
+                selectedStudent = _students.firstWhere((s) => (s.id?.toString() ?? '') == selectedIdStr);
+              } catch (_) {
+                selectedStudent = null;
+              }
+
+              if (selectedStudent == null) {
+                _showErrorDialog('تعذر تحديد الطالب المختار');
+                return;
+              }
+
+              filePath = await _createStudentSpecificFile(selectedStudent);
+              break;
             }
 
-            final selectedIdStr = _selectedStudents.first;
-            StudentModel? selectedStudent;
-            try {
-              selectedStudent = _students.firstWhere((s) => (s.id?.toString() ?? '') == selectedIdStr);
-            } catch (_) {
-              selectedStudent = null;
-            }
-
-            if (selectedStudent == null) {
-              _showErrorDialog('تعذر تحديد الطالب المختار');
-              return;
-            }
-
-            filePath = await _createStudentSpecificFile(selectedStudent);
-            break;
+            setState(() {
+              _selectedFilePath = null;
+              _exportedFilePath = null;
+            });
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('تم اختيار ملف: $fileType (سيتم إنشاء ملف خاص لكل طالب عند الإرسال)'),
+                backgroundColor: Colors.green,
+              ),
+            );
+            return;
           }
           break;
       }
@@ -1688,7 +1708,7 @@ class _MessagingScreenState extends State<MessagingScreen> {
     });
   }
 
-  Future<int?> _getTelegramChatIdForStudent(StudentModel student) async {
+  Future<int?> _getTelegramChatIdForStudent(StudentModel student, {required String recipientType}) async {
     try {
       final auth = Provider.of<AuthProvider>(context, listen: false);
       final ws = auth.workspaceId;
@@ -1696,7 +1716,13 @@ class _MessagingScreenState extends State<MessagingScreen> {
       // Local cache first (prevents intermittent false "not linked")
       try {
         final prefs = await SharedPreferences.getInstance();
-        final cached = prefs.getInt(_telegramChatIdCacheKey(workspaceId: ws, student: student));
+        final cached = prefs.getInt(
+          _telegramChatIdCacheKeyForRecipient(
+            workspaceId: ws,
+            student: student,
+            recipientType: recipientType,
+          ),
+        );
         if (cached != null && cached != 0) {
           return cached;
         }
@@ -1707,80 +1733,82 @@ class _MessagingScreenState extends State<MessagingScreen> {
           : FirebaseFirestore.instance.collection('students');
 
       final sid = student.id?.toString();
-      final sidInt = (sid != null && sid.isNotEmpty) ? int.tryParse(sid) : null;
+      final studentIdStr = student.studentId?.toString();
+
+      final idCandidates = <String>[];
+      if (sid != null && sid.trim().isNotEmpty) idCandidates.add(sid.trim());
+      if (studentIdStr != null && studentIdStr.trim().isNotEmpty) idCandidates.add(studentIdStr.trim());
+
+      final idCandidatesInt = <int>[];
+      for (final v in idCandidates) {
+        final asInt = int.tryParse(v);
+        if (asInt != null) idCandidatesInt.add(asInt);
+      }
+
       DocumentSnapshot<Map<String, dynamic>>? doc;
-      if (sid != null && sid.isNotEmpty) {
-        doc = await studentsCol.doc(sid).get();
+      if (idCandidates.isNotEmpty) {
+        doc = await studentsCol.doc(idCandidates.first).get();
       }
 
       Map<String, dynamic>? data;
       if (doc != null && doc.exists) {
         data = doc.data();
       } else {
-        // Fallbacks: some Firestore exports store the student id in fields like
-        // local_id / student_id and keep phone null.
-        if (sid != null && sid.isNotEmpty) {
+        // Fallbacks: Firestore exports may store the student id in fields like
+        // local_id / student_id (sometimes numeric) and keep phone null.
+        for (final cid in idCandidates) {
+          if (data != null) break;
           try {
-            final qsLocal = await studentsCol.where('local_id', isEqualTo: sid).limit(1).get();
-            if (qsLocal.docs.isNotEmpty) {
-              data = qsLocal.docs.first.data();
-            }
+            final qsLocal = await studentsCol.where('local_id', isEqualTo: cid).limit(1).get();
+            if (qsLocal.docs.isNotEmpty) data = qsLocal.docs.first.data();
           } catch (_) {}
 
-          if (data == null && sidInt != null) {
-            try {
-              final qsLocalNum = await studentsCol.where('local_id', isEqualTo: sidInt).limit(1).get();
-              if (qsLocalNum.docs.isNotEmpty) {
-                data = qsLocalNum.docs.first.data();
-              }
-            } catch (_) {}
-          }
-
-          if (data == null) {
-            try {
-              final qsStudentId = await studentsCol.where('student_id', isEqualTo: sid).limit(1).get();
-              if (qsStudentId.docs.isNotEmpty) {
-                data = qsStudentId.docs.first.data();
-              }
-            } catch (_) {}
-          }
-
-          if (data == null && sidInt != null) {
-            try {
-              final qsStudentIdNum = await studentsCol.where('student_id', isEqualTo: sidInt).limit(1).get();
-              if (qsStudentIdNum.docs.isNotEmpty) {
-                data = qsStudentIdNum.docs.first.data();
-              }
-            } catch (_) {}
-          }
-
-          if (data == null) {
-            if (sidInt != null) {
-              try {
-                final qsNumeric = await studentsCol.where('id', isEqualTo: sidInt).limit(1).get();
-                if (qsNumeric.docs.isNotEmpty) {
-                  data = qsNumeric.docs.first.data();
-                }
-              } catch (_) {}
-            }
-          }
+          if (data != null) break;
+          try {
+            final qsStudentId = await studentsCol.where('student_id', isEqualTo: cid).limit(1).get();
+            if (qsStudentId.docs.isNotEmpty) data = qsStudentId.docs.first.data();
+          } catch (_) {}
         }
 
-        final phone = (student.phone ?? '').trim();
-        if (phone.isNotEmpty) {
-          final qs = await studentsCol
-              .where('phone', isEqualTo: phone)
-              .limit(1)
-              .get();
-          if (qs.docs.isNotEmpty) {
-            data = qs.docs.first.data();
-          }
+        for (final cidInt in idCandidatesInt) {
+          if (data != null) break;
+          try {
+            final qsLocalNum = await studentsCol.where('local_id', isEqualTo: cidInt).limit(1).get();
+            if (qsLocalNum.docs.isNotEmpty) data = qsLocalNum.docs.first.data();
+          } catch (_) {}
+
+          if (data != null) break;
+          try {
+            final qsStudentIdNum = await studentsCol.where('student_id', isEqualTo: cidInt).limit(1).get();
+            if (qsStudentIdNum.docs.isNotEmpty) data = qsStudentIdNum.docs.first.data();
+          } catch (_) {}
+
+          if (data != null) break;
+          try {
+            final qsNumeric = await studentsCol.where('id', isEqualTo: cidInt).limit(1).get();
+            if (qsNumeric.docs.isNotEmpty) data = qsNumeric.docs.first.data();
+          } catch (_) {}
+        }
+
+        final phones = <String>{
+          (student.phone ?? '').trim(),
+          (student.parentPhone ?? '').trim(),
+          (student.primaryGuardian?.phone ?? '').trim(),
+          (student.secondaryGuardian?.phone ?? '').trim(),
+        }..removeWhere((p) => p.isEmpty);
+
+        for (final phone in phones) {
+          if (data != null) break;
+          try {
+            final qs = await studentsCol.where('phone', isEqualTo: phone).limit(1).get();
+            if (qs.docs.isNotEmpty) data = qs.docs.first.data();
+          } catch (_) {}
         }
       }
 
       if (data == null) return null;
 
-      final field = (_selectedRecipient == 'student') ? 'telegram_student_chat_id' : 'telegram_parent_chat_id';
+      final field = (recipientType == 'student') ? 'telegram_student_chat_id' : 'telegram_parent_chat_id';
       final raw = data[field];
       if (raw == null) return null;
       int? parsed;
@@ -1793,7 +1821,14 @@ class _MessagingScreenState extends State<MessagingScreen> {
       if (parsed != null && parsed != 0) {
         try {
           final prefs = await SharedPreferences.getInstance();
-          await prefs.setInt(_telegramChatIdCacheKey(workspaceId: ws, student: student), parsed);
+          await prefs.setInt(
+            _telegramChatIdCacheKeyForRecipient(
+              workspaceId: ws,
+              student: student,
+              recipientType: recipientType,
+            ),
+            parsed,
+          );
         } catch (_) {}
       }
       return parsed;
@@ -1825,7 +1860,8 @@ class _MessagingScreenState extends State<MessagingScreen> {
       final missing = <String>[];
       for (final studentId in _selectedStudents) {
         final student = _students.firstWhere((s) => s.id.toString() == studentId);
-        final chatId = await _getTelegramChatIdForStudent(student);
+        final recipientType = (_selectedRecipient == 'parent') ? 'parent' : 'student';
+        final chatId = await _getTelegramChatIdForStudent(student, recipientType: recipientType);
         if (chatId == null) {
           missing.add(student.name);
           continue;
@@ -4239,12 +4275,12 @@ class _MessagingScreenState extends State<MessagingScreen> {
                   ),
                 ),
                 PopupMenuItem(
-                  value: 'البيانات المالية',
+                  value: 'المعلومات المالية',
                   child: Row(
                     children: [
                       Icon(Icons.account_balance_wallet, color: Colors.green),
                       const SizedBox(width: 12),
-                      Text('البيانات المالية'),
+                      Text('المعلومات المالية'),
                     ],
                   ),
                 ),
@@ -4729,6 +4765,8 @@ class _MessagingScreenState extends State<MessagingScreen> {
         context,
         student: student,
         studentClass: _selectedClass!,
+        startDate: _allDates ? null : _startDate,
+        endDate: _allDates ? null : _endDate,
       );
       
       if (filePath != null) {
@@ -4767,6 +4805,8 @@ class _MessagingScreenState extends State<MessagingScreen> {
         context,
         student: student,
         studentClass: _selectedClass!,
+        startDate: _allDates ? null : _startDate,
+        endDate: _allDates ? null : _endDate,
       );
       
       if (filePath != null) {
@@ -4805,6 +4845,8 @@ class _MessagingScreenState extends State<MessagingScreen> {
         context,
         student: student,
         studentClass: _selectedClass!,
+        startDate: _allDates ? null : _startDate,
+        endDate: _allDates ? null : _endDate,
       );
       
       if (filePath != null) {

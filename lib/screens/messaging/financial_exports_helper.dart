@@ -14,11 +14,201 @@ import '../../models/student_model.dart';
 class FinancialExportsHelper {
   final DatabaseHelper _dbHelper = DatabaseHelper();
 
+  bool _isInRange(DateTime dt, DateTime? startDate, DateTime? endDate) {
+    if (startDate != null) {
+      final s = DateTime(startDate.year, startDate.month, startDate.day);
+      if (dt.isBefore(s)) return false;
+    }
+    if (endDate != null) {
+      final e = DateTime(endDate.year, endDate.month, endDate.day, 23, 59, 59, 999);
+      if (dt.isAfter(e)) return false;
+    }
+    return true;
+  }
+
+  DateTime? _tryParseDate(dynamic raw) {
+    final s = (raw ?? '').toString().trim();
+    if (s.isEmpty) return null;
+    return DateTime.tryParse(s.replaceAll('/', '-'));
+  }
+
+  Future<_StudentTuitionSummary> _buildStudentTuitionSummary({
+    required StudentModel student,
+    required ClassModel studentClass,
+    DateTime? startDate,
+    DateTime? endDate,
+  }) async {
+    final sid = student.id;
+    final cid = studentClass.id;
+    if (sid == null || cid == null) {
+      return const _StudentTuitionSummary.empty();
+    }
+
+    final plans = await _dbHelper.getClassTuitionPlans(cid);
+    final planIds = plans
+        .map((p) => (p['id'] is int) ? p['id'] as int : int.tryParse(p['id']?.toString() ?? '') ?? 0)
+        .where((id) => id > 0)
+        .toList();
+
+    if (planIds.isEmpty) {
+      return const _StudentTuitionSummary.empty();
+    }
+
+    final planNameById = <int, String>{
+      for (final p in plans)
+        ((p['id'] is int) ? p['id'] as int : int.tryParse(p['id']?.toString() ?? '') ?? 0): (p['name']?.toString() ?? ''),
+    };
+
+    final installmentsByPlanId = <int, List<Map<String, dynamic>>>{};
+    for (final pid in planIds) {
+      installmentsByPlanId[pid] = await _dbHelper.getTuitionPlanInstallments(pid);
+    }
+
+    final overridesByPlanStudent = await _dbHelper.getStudentTuitionOverridesMapForPlans(
+      studentIds: <int>[sid],
+      planIds: planIds,
+    );
+
+    final allPayments = <Map<String, dynamic>>[];
+    final paidByPlanInstallment = <int, Map<int, int>>{};
+    for (final pid in planIds) {
+      final payments = await _dbHelper.getTuitionPaymentsForStudentPlan(
+        studentId: sid,
+        planId: pid,
+      );
+
+      final filteredPayments = payments.where((p) {
+        if (startDate == null && endDate == null) return true;
+        final dt = _tryParseDate(p['payment_date']);
+        if (dt == null) return true;
+        return _isInRange(dt, startDate, endDate);
+      }).toList();
+
+      allPayments.addAll(filteredPayments.map((e) => {...e, 'plan_id': pid}));
+      final byInst = <int, int>{};
+      for (final p in filteredPayments) {
+        final ino = (p['installment_no'] is int)
+            ? p['installment_no'] as int
+            : int.tryParse(p['installment_no']?.toString() ?? '') ?? 0;
+        final amt = (p['paid_amount'] is int)
+            ? p['paid_amount'] as int
+            : int.tryParse(p['paid_amount']?.toString() ?? '') ?? 0;
+        if (ino > 0) {
+          byInst[ino] = (byInst[ino] ?? 0) + amt;
+        }
+      }
+      paidByPlanInstallment[pid] = byInst;
+    }
+
+    int totalDue = 0;
+    int totalPaid = 0;
+    int totalRemaining = 0;
+
+    final rows = <Map<String, dynamic>>[];
+    final lateRows = <Map<String, dynamic>>[];
+    final now = DateTime.now();
+
+    for (final pid in planIds) {
+      final planName = planNameById[pid] ?? '';
+      final inst = installmentsByPlanId[pid] ?? const <Map<String, dynamic>>[];
+      final paidByInst = paidByPlanInstallment[pid] ?? const <int, int>{};
+      for (final t in inst) {
+        final installmentNo = (t['installment_no'] is int)
+            ? t['installment_no'] as int
+            : int.tryParse(t['installment_no']?.toString() ?? '') ?? 0;
+        if (installmentNo <= 0) continue;
+
+        final override = overridesByPlanStudent[pid]?[sid]?[installmentNo];
+        final rawAmount = override?['amount'] ?? t['amount'];
+        final due = (rawAmount is int) ? rawAmount : int.tryParse(rawAmount?.toString() ?? '') ?? 0;
+        if (due <= 0) continue;
+
+        final dueDateStr = (override?['due_date'] ?? t['due_date'] ?? '').toString();
+
+        if (startDate != null || endDate != null) {
+          final dueDt = _tryParseDate(dueDateStr);
+          if (dueDt != null && !_isInRange(dueDt, startDate, endDate)) {
+            continue;
+          }
+        }
+
+        final paid = paidByInst[installmentNo] ?? 0;
+        final remaining = (due - paid).clamp(0, 1 << 30);
+
+        totalDue += due;
+        totalPaid += paid;
+        totalRemaining += remaining;
+
+        DateTime? dueDate;
+        if (dueDateStr.trim().isNotEmpty) {
+          dueDate = DateTime.tryParse(dueDateStr.replaceAll('/', '-'));
+        }
+        final daysLate = (dueDate == null)
+            ? null
+            : now.difference(DateTime(dueDate.year, dueDate.month, dueDate.day)).inDays;
+        final isLate = dueDate != null && (daysLate != null && daysLate > 0) && remaining > 0;
+
+        final row = {
+          'planId': pid,
+          'planName': planName,
+          'installmentNo': installmentNo,
+          'dueDate': dueDateStr,
+          'due': due,
+          'paid': paid,
+          'remaining': remaining,
+          'daysLate': daysLate,
+        };
+        rows.add(row);
+        if (isLate) {
+          lateRows.add(row);
+        }
+      }
+    }
+
+    rows.sort((a, b) {
+      final pa = a['planName']?.toString() ?? '';
+      final pb = b['planName']?.toString() ?? '';
+      final c = pa.compareTo(pb);
+      if (c != 0) return c;
+      final ia = a['installmentNo'] as int? ?? 0;
+      final ib = b['installmentNo'] as int? ?? 0;
+      return ia.compareTo(ib);
+    });
+
+    lateRows.sort((a, b) {
+      final da = a['daysLate'] as int? ?? 0;
+      final db = b['daysLate'] as int? ?? 0;
+      return db.compareTo(da);
+    });
+
+    allPayments.sort((a, b) {
+      final da = a['payment_date']?.toString() ?? '';
+      final db = b['payment_date']?.toString() ?? '';
+      final c = da.compareTo(db);
+      if (c != 0) return c;
+      final ia = (a['id'] is int) ? a['id'] as int : int.tryParse(a['id']?.toString() ?? '') ?? 0;
+      final ib = (b['id'] is int) ? b['id'] as int : int.tryParse(b['id']?.toString() ?? '') ?? 0;
+      return ia.compareTo(ib);
+    });
+
+    return _StudentTuitionSummary(
+      totalDue: totalDue,
+      totalPaid: totalPaid,
+      totalRemaining: totalRemaining,
+      installmentsRows: rows,
+      lateRows: lateRows,
+      payments: allPayments,
+      planNameById: planNameById,
+    );
+  }
+
   /// Export financial data for a specific student
   Future<String?> exportFinancialDataForStudent(
     BuildContext context, {
     required StudentModel student,
     required ClassModel studentClass,
+    DateTime? startDate,
+    DateTime? endDate,
   }) async {
     try {
       final arabicFont = pw.Font.ttf(
@@ -36,8 +226,12 @@ class FinancialExportsHelper {
         ),
       );
 
-      // Get student's financial data
-      final studentData = await _getStudentFinancialData(student, studentClass);
+      final tuition = await _buildStudentTuitionSummary(
+        student: student,
+        studentClass: studentClass,
+        startDate: startDate,
+        endDate: endDate,
+      );
 
       pdfDoc.addPage(
         pw.Page(
@@ -85,7 +279,7 @@ class FinancialExportsHelper {
                             children: [
                               pw.Text('القسط الكلي', style: pw.TextStyle(font: arabicBold, fontSize: 12)),
                               pw.SizedBox(height: 4),
-                              pw.Text('${studentData['totalDue']} د.ع'),
+                              pw.Text('${tuition.totalDue} د.ع'),
                             ],
                           ),
                         ),
@@ -103,7 +297,7 @@ class FinancialExportsHelper {
                             children: [
                               pw.Text('إجمالي المدفوعات', style: pw.TextStyle(font: arabicBold, fontSize: 12)),
                               pw.SizedBox(height: 4),
-                              pw.Text('${studentData['totalPaid']} د.ع'),
+                              pw.Text('${tuition.totalPaid} د.ع'),
                             ],
                           ),
                         ),
@@ -121,7 +315,7 @@ class FinancialExportsHelper {
                             children: [
                               pw.Text('المبلغ المتبقي', style: pw.TextStyle(font: arabicBold, fontSize: 12)),
                               pw.SizedBox(height: 4),
-                              pw.Text('${studentData['totalRemaining']} د.ع'),
+                              pw.Text('${tuition.totalRemaining} د.ع'),
                             ],
                           ),
                         ),
@@ -129,7 +323,7 @@ class FinancialExportsHelper {
                     ],
                   ),
                   pw.SizedBox(height: 14),
-                  if (studentData['courses'].isNotEmpty) ...[
+                  if (tuition.installmentsRows.isNotEmpty) ...[
                     pw.Table(
                       border: pw.TableBorder.all(color: PdfColor.fromInt(0xFFCCCCCC)),
                       columnWidths: {
@@ -137,6 +331,7 @@ class FinancialExportsHelper {
                         1: const pw.FlexColumnWidth(1),
                         2: const pw.FlexColumnWidth(1),
                         3: const pw.FlexColumnWidth(1),
+                        4: const pw.FlexColumnWidth(1),
                       },
                       children: [
                         pw.TableRow(
@@ -144,11 +339,15 @@ class FinancialExportsHelper {
                           children: [
                             pw.Padding(
                               padding: const pw.EdgeInsets.all(8),
-                              child: pw.Text('الكورس', style: pw.TextStyle(font: arabicBold, fontSize: 10)),
+                              child: pw.Text('القسط', style: pw.TextStyle(font: arabicBold, fontSize: 10)),
                             ),
                             pw.Padding(
                               padding: const pw.EdgeInsets.all(8),
-                              child: pw.Text('القسط', style: pw.TextStyle(font: arabicBold, fontSize: 10)),
+                              child: pw.Text('الدفعة', style: pw.TextStyle(font: arabicBold, fontSize: 10)),
+                            ),
+                            pw.Padding(
+                              padding: const pw.EdgeInsets.all(8),
+                              child: pw.Text('المستحق', style: pw.TextStyle(font: arabicBold, fontSize: 10)),
                             ),
                             pw.Padding(
                               padding: const pw.EdgeInsets.all(8),
@@ -160,24 +359,28 @@ class FinancialExportsHelper {
                             ),
                           ],
                         ),
-                        ...studentData['courses'].map<pw.TableRow>((course) {
+                        ...tuition.installmentsRows.map<pw.TableRow>((r) {
                           return pw.TableRow(
                             children: [
                               pw.Padding(
                                 padding: const pw.EdgeInsets.all(8),
-                                child: pw.Text(course['courseName']?.toString() ?? '', style: pw.TextStyle(font: arabicFont, fontSize: 9)),
+                                child: pw.Text(r['planName']?.toString() ?? '', style: pw.TextStyle(font: arabicFont, fontSize: 9)),
                               ),
                               pw.Padding(
                                 padding: const pw.EdgeInsets.all(8),
-                                child: pw.Text(course['due']?.toString() ?? '0', style: pw.TextStyle(font: arabicFont, fontSize: 9)),
+                                child: pw.Text(r['installmentNo']?.toString() ?? '0', style: pw.TextStyle(font: arabicFont, fontSize: 9)),
                               ),
                               pw.Padding(
                                 padding: const pw.EdgeInsets.all(8),
-                                child: pw.Text(course['paid']?.toString() ?? '0', style: pw.TextStyle(font: arabicFont, fontSize: 9)),
+                                child: pw.Text(r['due']?.toString() ?? '0', style: pw.TextStyle(font: arabicFont, fontSize: 9)),
                               ),
                               pw.Padding(
                                 padding: const pw.EdgeInsets.all(8),
-                                child: pw.Text(course['remaining']?.toString() ?? '0', style: pw.TextStyle(font: arabicFont, fontSize: 9)),
+                                child: pw.Text(r['paid']?.toString() ?? '0', style: pw.TextStyle(font: arabicFont, fontSize: 9)),
+                              ),
+                              pw.Padding(
+                                padding: const pw.EdgeInsets.all(8),
+                                child: pw.Text(r['remaining']?.toString() ?? '0', style: pw.TextStyle(font: arabicFont, fontSize: 9)),
                               ),
                             ],
                           );
@@ -238,6 +441,8 @@ class FinancialExportsHelper {
     BuildContext context, {
     required StudentModel student,
     required ClassModel studentClass,
+    DateTime? startDate,
+    DateTime? endDate,
   }) async {
     try {
       final arabicFont = pw.Font.ttf(
@@ -255,8 +460,12 @@ class FinancialExportsHelper {
         ),
       );
 
-      // Get student's late payment data
-      final lateData = await _getStudentLatePaymentData(student, studentClass);
+      final tuition = await _buildStudentTuitionSummary(
+        student: student,
+        studentClass: studentClass,
+        startDate: startDate,
+        endDate: endDate,
+      );
 
       pdfDoc.addPage(
         pw.Page(
@@ -281,9 +490,9 @@ class FinancialExportsHelper {
                   pw.Text('الموقع: ${student.location ?? studentClass.subject}', style: const pw.TextStyle(fontSize: 12)),
                   pw.Text('التاريخ: ${DateFormat('yyyy-MM-dd').format(DateTime.now())}', style: const pw.TextStyle(fontSize: 12)),
                   pw.SizedBox(height: 12),
-                  pw.Text(lateData['courses'].isEmpty ? 'لا يوجد تأخير في الدفع' : 'الكورسات المتأخرة:', style: const pw.TextStyle(fontSize: 12)),
+                  pw.Text(tuition.lateRows.isEmpty ? 'لا يوجد تأخير في الدفع' : 'الدفعات المتأخرة:', style: const pw.TextStyle(fontSize: 12)),
                   pw.SizedBox(height: 12),
-                  if (lateData['courses'].isNotEmpty)
+                  if (tuition.lateRows.isNotEmpty)
                     pw.Table(
                       border: pw.TableBorder.all(color: const PdfColor(0.35, 0.35, 0.35), width: 0.5),
                       columnWidths: {
@@ -296,16 +505,16 @@ class FinancialExportsHelper {
                         pw.TableRow(
                           decoration: const pw.BoxDecoration(color: PdfColor.fromInt(0xFF1A1A1A)),
                           children: [
-                            _buildHeaderCell('الكورس', arabicBold),
+                            _buildHeaderCell('القسط / الدفعة', arabicBold),
                             _buildHeaderCell('المبلغ المتبقي', arabicBold),
                             _buildHeaderCell('تاريخ الاستحقاق', arabicBold),
                             _buildHeaderCell('أيام التأخير', arabicBold),
                           ],
                         ),
-                        ...lateData['courses'].map(
+                        ...tuition.lateRows.map(
                           (r) => pw.TableRow(
                             children: [
-                              _buildCell(r['courseName']?.toString() ?? '', arabicFont),
+                              _buildCell('${r['planName']?.toString() ?? ''} - ${r['installmentNo']?.toString() ?? ''}', arabicFont),
                               _buildCell(r['remaining']?.toString() ?? '0', arabicFont),
                               _buildCell(r['dueDate']?.toString() ?? '', arabicFont),
                               _buildCell(r['daysLate']?.toString() ?? '0', arabicFont),
@@ -367,6 +576,8 @@ class FinancialExportsHelper {
     BuildContext context, {
     required StudentModel student,
     required ClassModel studentClass,
+    DateTime? startDate,
+    DateTime? endDate,
   }) async {
     try {
       final arabicFont = pw.Font.ttf(
@@ -384,14 +595,14 @@ class FinancialExportsHelper {
         ),
       );
 
-      // Get student's payment history
-      final payments = await _dbHelper.getAllInstallmentsWithDetails(
-        locationFilter: student.location ?? studentClass.subject,
-        classIdFilter: studentClass.id,
+      final tuition = await _buildStudentTuitionSummary(
+        student: student,
+        studentClass: studentClass,
+        startDate: startDate,
+        endDate: endDate,
       );
 
-      // Filter payments for this student only
-      final studentPayments = payments.where((p) => p['student_id'] == student.id).toList();
+      final payments = tuition.payments;
 
       pdfDoc.addPage(
         pw.Page(
@@ -456,15 +667,25 @@ class FinancialExportsHelper {
                           ),
                         ],
                       ),
-                      ...List.generate(studentPayments.length, (index) {
-                        final p = studentPayments[index];
+                      ...List.generate(payments.length, (index) {
+                        final p = payments[index];
+                        final pid = (p['plan_id'] is int)
+                            ? p['plan_id'] as int
+                            : int.tryParse(p['plan_id']?.toString() ?? '') ?? 0;
+                        final planName = tuition.planNameById[pid] ?? '';
+                        final installmentNo = (p['installment_no'] is int)
+                            ? p['installment_no'] as int
+                            : int.tryParse(p['installment_no']?.toString() ?? '') ?? 0;
+                        final paidAmount = (p['paid_amount'] is int)
+                            ? p['paid_amount'] as int
+                            : int.tryParse(p['paid_amount']?.toString() ?? '') ?? 0;
                         return pw.TableRow(
                           children: [
                             pw.Container(padding: const pw.EdgeInsets.all(8), child: pw.Text('${index + 1}', style: const pw.TextStyle(fontSize: 10))),
-                            pw.Container(padding: const pw.EdgeInsets.all(8), child: pw.Text(p['course_name']?.toString() ?? '', style: const pw.TextStyle(fontSize: 10))),
-                            pw.Container(padding: const pw.EdgeInsets.all(8), child: pw.Text(p['installment_name']?.toString() ?? '', style: const pw.TextStyle(fontSize: 10))),
-                            pw.Container(padding: const pw.EdgeInsets.all(8), child: pw.Text(p['amount']?.toString() ?? '0', style: const pw.TextStyle(fontSize: 10))),
-                            pw.Container(padding: const pw.EdgeInsets.all(8), child: pw.Text(p['date']?.toString() ?? '', style: const pw.TextStyle(fontSize: 10))),
+                            pw.Container(padding: const pw.EdgeInsets.all(8), child: pw.Text(planName, style: const pw.TextStyle(fontSize: 10))),
+                            pw.Container(padding: const pw.EdgeInsets.all(8), child: pw.Text('دفعة $installmentNo', style: const pw.TextStyle(fontSize: 10))),
+                            pw.Container(padding: const pw.EdgeInsets.all(8), child: pw.Text('$paidAmount', style: const pw.TextStyle(fontSize: 10))),
+                            pw.Container(padding: const pw.EdgeInsets.all(8), child: pw.Text(p['payment_date']?.toString() ?? '', style: const pw.TextStyle(fontSize: 10))),
                             pw.Container(padding: const pw.EdgeInsets.all(8), child: pw.Text(p['notes']?.toString() ?? '', style: const pw.TextStyle(fontSize: 10))),
                           ],
                         );
@@ -548,117 +769,33 @@ class FinancialExportsHelper {
       ),
     );
   }
+}
 
-  Future<Map<String, dynamic>> _getStudentFinancialData(StudentModel student, ClassModel studentClass) async {
-    final courses = await _dbHelper.getCourses();
-    final studentCourses = courses.where((c) => (c['location']?.toString() ?? '') == (student.location ?? studentClass.subject)).toList();
-    
-    int totalDue = 0;
-    int totalPaid = 0;
-    int totalRemaining = 0;
-    final courseDetails = <Map<String, dynamic>>[];
+class _StudentTuitionSummary {
+  final int totalDue;
+  final int totalPaid;
+  final int totalRemaining;
+  final List<Map<String, dynamic>> installmentsRows;
+  final List<Map<String, dynamic>> lateRows;
+  final List<Map<String, dynamic>> payments;
+  final Map<int, String> planNameById;
 
-    for (final course in studentCourses) {
-      final courseId = course['id']?.toString() ?? '';
-      if (courseId.isEmpty) continue;
+  const _StudentTuitionSummary({
+    required this.totalDue,
+    required this.totalPaid,
+    required this.totalRemaining,
+    required this.installmentsRows,
+    required this.lateRows,
+    required this.payments,
+    required this.planNameById,
+  });
 
-      // Get enabled price for this student/class/course
-      final db = await _dbHelper.database;
-      final priceRows = await db.query(
-        'class_course_prices',
-        columns: ['amount'],
-        where: 'class_id = ? AND course_id = ? AND enabled = 1',
-        whereArgs: [studentClass.id, courseId],
-        limit: 1,
-      );
-
-      if (priceRows.isEmpty) continue;
-      final due = priceRows.first['amount'] as int? ?? 0;
-      if (due <= 0) continue;
-
-      final paid = await _dbHelper.getTotalPaidByStudentAndCourse(
-        studentId: student.id!,
-        courseId: courseId,
-      );
-      final remaining = (due - paid).clamp(0, 1 << 30);
-
-      totalDue += due;
-      totalPaid += paid;
-      totalRemaining += remaining;
-
-      courseDetails.add({
-        'courseName': course['name']?.toString() ?? '',
-        'due': due,
-        'paid': paid,
-        'remaining': remaining,
-      });
-    }
-
-    return {
-      'totalDue': totalDue,
-      'totalPaid': totalPaid,
-      'totalRemaining': totalRemaining,
-      'courses': courseDetails,
-    };
-  }
-
-  Future<Map<String, dynamic>> _getStudentLatePaymentData(StudentModel student, ClassModel studentClass) async {
-    final courses = await _dbHelper.getCourses();
-    final studentCourses = courses.where((c) => (c['location']?.toString() ?? '') == (student.location ?? studentClass.subject)).toList();
-    
-    final dueDates = await _dbHelper.getAllCourseDueDates();
-    final now = DateTime.now();
-    final lateCourses = <Map<String, dynamic>>[];
-
-    for (final course in studentCourses) {
-      final courseId = course['id']?.toString() ?? '';
-      if (courseId.isEmpty) continue;
-
-      // Get enabled price for this student/class/course
-      final db = await _dbHelper.database;
-      final priceRows = await db.query(
-        'class_course_prices',
-        columns: ['amount'],
-        where: 'class_id = ? AND course_id = ? AND enabled = 1',
-        whereArgs: [studentClass.id, courseId],
-        limit: 1,
-      );
-
-      if (priceRows.isEmpty) continue;
-      final due = priceRows.first['amount'] as int? ?? 0;
-      if (due <= 0) continue;
-
-      final paid = await _dbHelper.getTotalPaidByStudentAndCourse(
-        studentId: student.id!,
-        courseId: courseId,
-      );
-      final remaining = (due - paid).clamp(0, 1 << 30);
-
-      // Check if late
-      final dueKey = '${studentClass.id}|$courseId';
-      final dueDateStr = dueDates[dueKey];
-      DateTime? dueDate;
-      if (dueDateStr != null) {
-        dueDate = DateTime.tryParse(dueDateStr);
-      }
-      
-      final daysLate = (dueDate == null)
-          ? null
-          : now.difference(DateTime(dueDate.year, dueDate.month, dueDate.day)).inDays;
-      final isLate = dueDate != null && (daysLate != null && daysLate > 0) && remaining > 0;
-
-      if (isLate) {
-        lateCourses.add({
-          'courseName': course['name']?.toString() ?? '',
-          'remaining': remaining,
-          'dueDate': dueDateStr ?? '',
-          'daysLate': daysLate ?? 0,
-        });
-      }
-    }
-
-    return {
-      'courses': lateCourses,
-    };
-  }
+  const _StudentTuitionSummary.empty()
+      : totalDue = 0,
+        totalPaid = 0,
+        totalRemaining = 0,
+        installmentsRows = const <Map<String, dynamic>>[],
+        lateRows = const <Map<String, dynamic>>[],
+        payments = const <Map<String, dynamic>>[],
+        planNameById = const <int, String>{};
 }

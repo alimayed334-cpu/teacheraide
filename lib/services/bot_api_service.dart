@@ -118,7 +118,7 @@ class BotApiService {
       if (caption != null && caption.trim().isNotEmpty) {
         req.fields['caption'] = caption.trim();
       }
-      req.files.add(await http.MultipartFile.fromPath('file', file.path));
+      req.files.add(await http.MultipartFile.fromPath('document', file.path));
       final streamed = await req.send();
       return streamed.statusCode >= 200 && streamed.statusCode < 300;
     } catch (e) {
